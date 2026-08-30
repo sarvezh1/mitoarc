@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""Generate caller-specific unshifted mtDNA consensus with explicit heteroplasmy rules."""
+
+import argparse
+import csv
+import gzip
+import hashlib
+
+VERSION = "1.0.0"
+IUPAC = {
+    frozenset("AC"): "M", frozenset("AG"): "R", frozenset("AT"): "W",
+    frozenset("CG"): "S", frozenset("CT"): "Y", frozenset("GT"): "K",
+    frozenset("ACG"): "V", frozenset("ACT"): "H", frozenset("AGT"): "D",
+    frozenset("CGT"): "B", frozenset("ACGT"): "N",
+}
+
+
+def open_text(path):
+    return gzip.open(path, "rt") if str(path).endswith(".gz") else open(path, "rt")
+
+
+def read_fasta(path):
+    header, sequence = "NA", []
+    with open(path) as handle:
+        for line in handle:
+            if line.startswith(">") and header == "NA":
+                header = line[1:].strip()
+            elif not line.startswith(">"):
+                sequence.append(line.strip())
+    return header, "".join(sequence).upper()
+
+
+def alt_value(value, index):
+    values = [] if value in {None, "", "."} else value.split(",")
+    return None if not values else (values[index] if index < len(values) else values[0])
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sample", required=True)
+    parser.add_argument("--caller", required=True)
+    parser.add_argument("--vcf", required=True)
+    parser.add_argument("--reference", required=True)
+    parser.add_argument("--canonical-reference", required=True)
+    parser.add_argument("--homoplasmy-threshold", required=True, type=float)
+    parser.add_argument("--heteroplasmy-mode", choices=["reference", "iupac"], required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--validation", required=True)
+    args = parser.parse_args()
+
+    _, reference = read_fasta(args.reference)
+    _, canonical = read_fasta(args.canonical_reference)
+    canonical_compatible = reference == canonical and len(reference) == 16569
+    sites = {}
+    shifted_records = 0
+    with open_text(args.vcf) as handle:
+        for line in handle:
+            if not line.strip() or line.startswith("#"):
+                continue
+            fields = line.rstrip("\n").split("\t")
+            chrom, pos_text, _, ref, alt_text, _, filt, info_text = fields[:8]
+            if "shifted" in chrom.lower():
+                shifted_records += 1
+                continue
+            pos = int(pos_text)
+            keys = fields[8].split(":") if len(fields) > 8 else []
+            values = fields[9].split(":") if len(fields) > 9 else []
+            fmt = dict(zip(keys, values))
+            info = dict(x.split("=", 1) for x in info_text.split(";") if "=" in x)
+            if filt not in {"PASS", "."}:
+                continue
+            for index, alt in enumerate(alt_text.split(",")):
+                af = alt_value(fmt.get("AF"), index)
+                if af is None and fmt.get("AD"):
+                    ad = [int(x) for x in fmt["AD"].split(",") if x not in {"", "."}]
+                    if len(ad) > index + 1 and sum(ad):
+                        af = str(ad[index + 1] / sum(ad))
+                try:
+                    vaf = float(af) if af is not None else None
+                except ValueError:
+                    vaf = None
+                sites.setdefault((pos, ref), []).append((alt, vaf))
+
+    edits = []
+    heteroplasmic_reference = 0
+    unsupported_heteroplasmy = 0
+    conflict_sites = 0
+    for (pos, ref), alleles in sites.items():
+        eligible = [(alt, vaf) for alt, vaf in alleles if vaf is not None and vaf >= args.homoplasmy_threshold]
+        hetero = [(alt, vaf) for alt, vaf in alleles if vaf is not None and vaf < args.homoplasmy_threshold]
+        if len(eligible) == 1:
+            edits.append((pos, ref, eligible[0][0], "near_homoplasmic"))
+        elif len(eligible) > 1:
+            conflict_sites += 1
+        elif hetero and args.heteroplasmy_mode == "iupac" and len(ref) == 1 and all(len(a) == 1 for a, _ in hetero):
+            bases = frozenset([ref] + [a for a, _ in hetero])
+            code = IUPAC.get(bases, ref if len(bases) == 1 else None)
+            if code:
+                edits.append((pos, ref, code, "iupac"))
+            else:
+                unsupported_heteroplasmy += 1
+        elif hetero:
+            heteroplasmic_reference += 1
+            if any(len(ref) != 1 or len(a) != 1 for a, _ in hetero):
+                unsupported_heteroplasmy += 1
+
+    sequence = reference
+    ref_mismatches = 0
+    overlap_conflicts = 0
+    last_start = len(reference) + 1
+    applied_substitutions = 0
+    iupac_sites = 0
+    indel_delta = 0
+    for pos, ref, replacement, edit_type in sorted(edits, reverse=True):
+        start = pos - 1
+        end = start + len(ref)
+        if end > last_start:
+            overlap_conflicts += 1
+            continue
+        if reference[start:end].upper() != ref.upper():
+            ref_mismatches += 1
+            continue
+        sequence = sequence[:start] + replacement + sequence[end:]
+        last_start = start
+        if edit_type == "iupac":
+            iupac_sites += 1
+        else:
+            applied_substitutions += 1
+            indel_delta += len(replacement) - len(ref)
+
+    validation_status = "PASS" if not (shifted_records or ref_mismatches or overlap_conflicts or conflict_sites) else "FAILED_QC"
+    compatibility = "CANONICAL_NC_012920.1" if canonical_compatible else "TECHNICAL_OR_NONCANONICAL_REFERENCE"
+    header = (f">{args.sample}|caller={args.caller}|reference=standard_mt|"
+              f"heteroplasmy_mode={args.heteroplasmy_mode}|homoplasmy_threshold={args.homoplasmy_threshold:g}|"
+              f"reference_compatibility={compatibility}")
+    with open(args.output, "w") as out:
+        out.write(header + "\n")
+        for offset in range(0, len(sequence), 60):
+            out.write(sequence[offset:offset + 60] + "\n")
+
+    columns = ["sample", "caller", "algorithm", "algorithm_version", "reference_length",
+               "consensus_length", "reference_sha256", "consensus_sha256", "reference_compatibility",
+               "homoplasmy_threshold", "heteroplasmy_mode", "near_homoplasmic_edits", "iupac_sites",
+               "heteroplasmic_sites_left_reference", "unsupported_heteroplasmic_sites", "indel_length_delta",
+               "shifted_coordinate_records", "ref_mismatches", "overlap_conflicts", "multi_alt_conflicts",
+               "validation_status"]
+    values = [args.sample, args.caller, "mtdna_pipeline_consensus", VERSION, len(reference), len(sequence),
+              hashlib.sha256(reference.encode()).hexdigest(), hashlib.sha256(sequence.encode()).hexdigest(),
+              compatibility, f"{args.homoplasmy_threshold:g}", args.heteroplasmy_mode,
+              applied_substitutions, iupac_sites, heteroplasmic_reference, unsupported_heteroplasmy,
+              indel_delta, shifted_records, ref_mismatches, overlap_conflicts, conflict_sites, validation_status]
+    with open(args.validation, "w", newline="") as out:
+        writer = csv.writer(out, delimiter="\t", lineterminator="\n")
+        writer.writerow(columns)
+        writer.writerow(values)
+
+
+if __name__ == "__main__":
+    main()
+

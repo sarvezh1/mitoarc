@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""Run HaploGrep only for full-length human mtDNA VCFs and standardize rank 1."""
+
+import csv
+import gzip
+import subprocess
+import sys
+from pathlib import Path
+
+
+def opener(path):
+    return gzip.open(path, "rt") if str(path).endswith(".gz") else open(path, "rt")
+
+
+sample, caller, vcf, tree, het_level, native, standardized = sys.argv[1:]
+variant_count = 0
+mt_lengths = {}
+with opener(vcf) as handle:
+    for line in handle:
+        if line.startswith("##contig=<"):
+            body = line.strip()[10:-1]
+            fields = dict(x.split("=", 1) for x in body.split(",") if "=" in x)
+            if fields.get("ID") in {"chrM", "MT", "M"}:
+                mt_lengths[fields["ID"]] = fields.get("length")
+        elif line.strip() and not line.startswith("#"):
+            variant_count += 1
+
+header = ["sample", "caller", "haplogroup", "quality", "rank",
+          "input_variant_count", "status", "tool", "tool_version", "reference_tree"]
+
+def write_standard(values):
+    with open(standardized, "w", newline="") as out:
+        writer = csv.writer(out, delimiter="\t", lineterminator="\n")
+        writer.writerow(header)
+        writer.writerow(values)
+
+
+if not mt_lengths or any(length != "16569" for length in mt_lengths.values()):
+    Path(native).write_text(
+        "SampleID\tHaplogroup\tRank\tQuality\tRange\tStatus\n"
+        f"{sample}\tNA\tNA\tNA\tNA\tINSUFFICIENT_REFERENCE_LENGTH\n"
+    )
+    write_standard([sample, caller, "NA", "NA", "NA", variant_count,
+                    "UNAVAILABLE", "HaploGrep", "3.3.2", tree])
+    sys.exit(0)
+
+command = ["haplogrep3", "classify", "--tree", tree, "--input", vcf,
+           "--output", native, "--hits", "1", "--hetLevel", het_level]
+completed = subprocess.run(command, text=True, capture_output=True)
+if completed.returncode != 0 or not Path(native).exists():
+    Path(native).write_text(
+        "SampleID\tHaplogroup\tRank\tQuality\tRange\tStatus\n"
+        f"{sample}\tNA\tNA\tNA\tNA\tFAILED_QC\n"
+        f"# stderr: {completed.stderr.strip()}\n"
+    )
+    write_standard([sample, caller, "NA", "NA", "NA", variant_count,
+                    "FAILED_QC", "HaploGrep", "3.3.2", tree])
+    sys.exit(0)
+
+with open(native, newline="") as handle:
+    rows = list(csv.DictReader(handle, delimiter="\t"))
+rank_one = next((row for row in rows if row.get("Rank") == "1"), rows[0] if rows else None)
+if not rank_one or not rank_one.get("Haplogroup"):
+    write_standard([sample, caller, "NA", "NA", "NA", variant_count,
+                    "UNAVAILABLE", "HaploGrep", "3.3.2", tree])
+else:
+    write_standard([sample, caller, rank_one["Haplogroup"],
+                    rank_one.get("Quality") or "NA", rank_one.get("Rank") or "NA",
+                    variant_count, "AVAILABLE", "HaploGrep", "3.3.2", tree])

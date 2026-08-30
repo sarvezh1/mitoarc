@@ -1,0 +1,2 @@
+benchmark_id	sample_id	dataset_type	reference	input_bam_or_fastq	truth_vcf	depth_target	vaf_target	vaf_bin	variant_class	variant_position	boundary_class	numt_context	caller	numt_strategy	circular_mode	replicate	seed	numt_truth	numt_design
+example_d100_vaf020_A_gatk_circ_r1	TEST	real_validation	../../test_data/fixture-reference.fa	../../test_data/fixtures/TEST.sorted.bam	../truth/example_truth.tsv	100	0.20	VAF_0_10_0_50	SNV	200	NON_BOUNDARY	NO_NUMT_CHALLENGE	gatk	A	standard_plus_shifted	1	11001	NA	NA

@@ -1,0 +1,6 @@
+contig	pos	ref	alt	truth_class	case_id	generating_origin
+chrM	25	T	C	TRUE_MT	BOUNDARY_TRUTH	chrM
+chrM	120	T	A	TRUE_MT	TRUE_MT_NEW	chrM
+chrM	200	T	C	TRUE_MT	STANDARD_TRUTH	chrM
+chrM	350	T	A	NUMT_FALSE	NUMT_DERIVED	chr1
+chrM	370	C	A	AMBIGUOUS	AMBIGUOUS_ORIGIN	chr1_or_chrM

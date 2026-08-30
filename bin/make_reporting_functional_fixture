@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""Create deterministic canonical coverage and QC metrics for report rendering tests."""
+
+import argparse
+import csv
+import math
+import statistics
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sample", required=True)
+    parser.add_argument("--length", type=int, default=16569)
+    parser.add_argument("--coverage-mapq", required=True)
+    parser.add_argument("--depth", required=True)
+    parser.add_argument("--metrics", required=True)
+    args = parser.parse_args()
+
+    depths = []
+    for position in range(1, args.length + 1):
+        depth = 850 + int(120 * math.sin(2 * math.pi * position / args.length))
+        depth += int(60 * math.cos(6 * math.pi * position / args.length))
+        if 7800 <= position <= 8000:
+            depth = 45 + position % 30
+        if 12000 <= position < 12100:
+            depth = 0
+        depths.append(max(depth, 0))
+
+    with open(args.depth, "w", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        writer.writerow(["sample", "position", "coverage"])
+        for position, depth in enumerate(depths, 1):
+            writer.writerow([args.sample, position, depth])
+
+    mean_mt = statistics.fmean(depths)
+    median_mt = statistics.median(depths)
+    thresholds = {threshold: 100 * sum(depth >= threshold for depth in depths) / len(depths)
+                  for threshold in (1, 10, 100, 500, 1000)}
+    mean_auto = 30.0
+    columns = [
+        "sample", "mt_contig", "mean_mt_depth", "median_mt_depth", "min_mt_depth",
+        "max_mt_depth", "pct_mt_ge_1x", "pct_mt_ge_10x", "pct_mt_ge_100x",
+        "pct_mt_ge_500x", "pct_mt_ge_1000x", "autosomal_contigs",
+        "mean_autosomal_depth", "median_autosomal_depth", "mtdna_copy_number_proxy",
+        "coverage_mapq", "copy_number_proxy_status",
+    ]
+    row = [
+        args.sample, "chrM", f"{mean_mt:.6f}", f"{median_mt:.6f}", min(depths), max(depths),
+        *(f"{thresholds[threshold]:.6f}" for threshold in (1, 10, 100, 500, 1000)),
+        "synthetic_autosomal_baseline", f"{mean_auto:.6f}", f"{mean_auto:.6f}",
+        f"{2 * mean_mt / mean_auto:.6f}", args.coverage_mapq,
+        "available_deterministic_functional_fixture",
+    ]
+    with open(args.metrics, "w", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        writer.writerow(columns)
+        writer.writerow(row)
+
+
+if __name__ == "__main__":
+    main()

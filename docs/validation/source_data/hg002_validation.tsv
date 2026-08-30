@@ -1,0 +1,11 @@
+measure	result
+Dataset context	Reduced indexed remote HG002 subset; complete chrM, partial nuclear context
+mtDNA depth	mean 131,324x; median 133,298x; range 2620–170298x
+Coverage thresholds	>=1x/10x/100x/500x/1000x: 100% each
+Caller totals	GATK 35; mutserve2 21; shared 16; GATK-only 13; mutserve2-only 5
+Haplogroup	H5a7 from both callers; qualities 0.9638 and 0.9681
+Contamination	Unavailable: INSUFFICIENT_DATA for both caller-specific Haplocheck results
+Copy-number proxy	unavailable_incomplete_mapped_autosomal_context
+NUMT evidence	49 retained, 0 flagged, 7 unresolved; NUMT_EVIDENCE 4h16m39s
+Consensus	GATK PASS, length 16569; mutserve2 FAILED_QC, length 16569
+Reporting	HTML report, MultiQC, SVG/PNG plots and validators generated

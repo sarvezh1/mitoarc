@@ -1,0 +1,400 @@
+#!/usr/bin/env python3
+"""Build read/variant-level NUMT evidence and tiny-fixture strategy summaries."""
+
+import argparse
+import gzip
+import os
+import re
+import sqlite3
+import subprocess
+import tempfile
+from collections import defaultdict
+
+
+def open_text(path):
+    return gzip.open(path, "rt") if str(path).endswith(".gz") else open(path)
+
+
+def read_vcf(path):
+    calls = {}
+    with open_text(path) as handle:
+        for line in handle:
+            if line.startswith("#"):
+                continue
+            fields = line.rstrip().split("\t")
+            for alt in fields[4].split(","):
+                calls[(fields[0], int(fields[1]), fields[3], alt)] = (
+                    "CALLED" if fields[6] in (".", "PASS") else fields[6]
+                )
+    return calls
+
+
+def read_truth(path):
+    truth = {}
+    with open(path) as handle:
+        header = handle.readline().rstrip().split("\t")
+        columns = {name: i for i, name in enumerate(header)}
+        for line in handle:
+            f = line.rstrip().split("\t")
+            key = (f[columns["contig"]], int(f[columns["pos"]]), f[columns["ref"]], f[columns["alt"]])
+            truth[key] = (f[columns["truth_class"]], f[columns["case_id"]])
+    return truth
+
+
+def sam_records(path):
+    proc = subprocess.Popen(["samtools", "view", path], stdout=subprocess.PIPE, text=True)
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        f = line.rstrip().split("\t")
+        yield f
+    if proc.wait() != 0:
+        raise RuntimeError(f"samtools view failed for {path}")
+
+
+def unique_join(values):
+    return ",".join(sorted(set(values))) if values else "NA"
+
+
+def prepare_evidence_db():
+    handle = tempfile.NamedTemporaryFile(
+        prefix="numt_evidence.", suffix=".sqlite", dir=".", delete=False
+    )
+    handle.close()
+    db = sqlite3.connect(handle.name)
+    db.executescript("""
+        PRAGMA journal_mode=OFF;
+        PRAGMA synchronous=OFF;
+        PRAGMA temp_store=FILE;
+        CREATE TABLE support (
+            variant_id INTEGER NOT NULL,
+            read_name TEXT NOT NULL,
+            mapq INTEGER NOT NULL,
+            PRIMARY KEY (variant_id, read_name)
+        ) WITHOUT ROWID;
+        CREATE INDEX support_read_name ON support(read_name);
+        CREATE TABLE evidence (
+            read_name TEXT PRIMARY KEY,
+            oa INTEGER NOT NULL,
+            nuc_secondary INTEGER NOT NULL,
+            nuc_supplementary INTEGER NOT NULL,
+            nuc_alt INTEGER NOT NULL,
+            b_keep INTEGER NOT NULL,
+            nuclear_primary INTEGER NOT NULL,
+            strong_nuclear INTEGER NOT NULL,
+            nuclear_mate INTEGER NOT NULL
+        ) WITHOUT ROWID;
+        CREATE TABLE primary_contigs (
+            read_name TEXT NOT NULL,
+            value TEXT NOT NULL,
+            PRIMARY KEY (read_name, value)
+        ) WITHOUT ROWID;
+        CREATE TABLE primary_mapqs (
+            read_name TEXT NOT NULL,
+            value TEXT NOT NULL,
+            PRIMARY KEY (read_name, value)
+        ) WITHOUT ROWID;
+        CREATE TABLE mate_contigs (
+            read_name TEXT NOT NULL,
+            value TEXT NOT NULL,
+            PRIMARY KEY (read_name, value)
+        ) WITHOUT ROWID;
+    """)
+    return db, handle.name
+
+
+def fullref_evidence(db, path, mt_contig, min_mapq):
+    db.execute("BEGIN")
+    for f in sam_records(path):
+        qname, flag, contig, mapq, mate = f[0], int(f[1]), f[2], int(f[4]), f[6]
+        if db.execute(
+            "SELECT 1 FROM support WHERE read_name=? LIMIT 1", (qname,)
+        ).fetchone() is None:
+            continue
+        tags = f[11:]
+        oa = any(t.startswith("OA:Z:") for t in tags)
+        nuc_secondary = flag & 0x100 and contig not in ("*", mt_contig)
+        nuc_supplementary = flag & 0x800 and contig not in ("*", mt_contig)
+        nuc_alt = (nuc_secondary or nuc_supplementary) and mapq >= min_mapq
+        b_keep = False
+        nuclear_primary = False
+        strong_nuclear = False
+        nuclear_mate = False
+        if not flag & (0x100 | 0x800):
+            db.execute("INSERT OR IGNORE INTO primary_contigs VALUES (?, ?)", (qname, contig))
+            db.execute("INSERT OR IGNORE INTO primary_mapqs VALUES (?, ?)", (qname, str(mapq)))
+            nuclear_primary = contig not in ("*", mt_contig)
+            strong_nuclear = nuclear_primary and mapq >= min_mapq
+            b_keep = contig == mt_contig and mapq >= min_mapq
+            if mate == "=":
+                mate = contig
+            if mate not in ("*", ""):
+                db.execute("INSERT OR IGNORE INTO mate_contigs VALUES (?, ?)", (qname, mate))
+                nuclear_mate = mate != mt_contig
+        for tag in tags:
+            if tag.startswith("XA:Z:"):
+                for alt in tag[5:].split(";"):
+                    if alt and alt.split(",", 1)[0] != mt_contig:
+                        nuc_secondary = True
+                # XA does not carry MAPQ, so it is ambiguity, not strong evidence.
+            if tag.startswith("SA:Z:"):
+                for alt in tag[5:].split(";"):
+                    if not alt:
+                        continue
+                    parts = alt.split(",")
+                    if parts[0] != mt_contig:
+                        nuc_supplementary = True
+                        if len(parts) > 4 and int(parts[4]) >= min_mapq:
+                            nuc_alt = True
+        strong_nuclear = strong_nuclear or nuc_alt
+        db.execute("""
+            INSERT INTO evidence VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(read_name) DO UPDATE SET
+                oa=max(oa, excluded.oa),
+                nuc_secondary=max(nuc_secondary, excluded.nuc_secondary),
+                nuc_supplementary=max(nuc_supplementary, excluded.nuc_supplementary),
+                nuc_alt=max(nuc_alt, excluded.nuc_alt),
+                b_keep=max(b_keep, excluded.b_keep),
+                nuclear_primary=max(nuclear_primary, excluded.nuclear_primary),
+                strong_nuclear=max(strong_nuclear, excluded.strong_nuclear),
+                nuclear_mate=max(nuclear_mate, excluded.nuclear_mate)
+        """, (qname, oa, nuc_secondary, nuc_supplementary, nuc_alt, b_keep,
+              nuclear_primary, strong_nuclear, nuclear_mate))
+    db.commit()
+
+
+def aligned_base(position, start, cigar, sequence):
+    ref_pos, query_pos = start, 0
+    for length_s, op in re.findall(r"(\d+)([MIDNSHP=X])", cigar):
+        length = int(length_s)
+        if op in "M=X":
+            if ref_pos <= position < ref_pos + length:
+                return sequence[query_pos + position - ref_pos]
+            ref_pos += length
+            query_pos += length
+        elif op in "DN":
+            if ref_pos <= position < ref_pos + length:
+                return "-"
+            ref_pos += length
+        elif op in "IS":
+            query_pos += length
+    return None
+
+
+def supporting_fragments(db, path, variants, mt_contig):
+    by_position = defaultdict(list)
+    for variant_id, key in enumerate(variants):
+        if key[0] == mt_contig and len(key[2]) == 1 and len(key[3]) == 1:
+            by_position[key[1]].append((variant_id, key))
+    db.execute("BEGIN")
+    for f in sam_records(path):
+        flag = int(f[1])
+        if flag & (0x100 | 0x800 | 0x4) or f[2] != mt_contig:
+            continue
+        start, mapq, cigar, seq = int(f[3]), int(f[4]), f[5], f[9]
+        ref_span = sum(int(n) for n, op in re.findall(r"(\d+)([MIDNSHP=X])", cigar) if op in "MDN=X")
+        for pos in range(start, start + ref_span):
+            for variant_id, key in by_position.get(pos, []):
+                if aligned_base(pos, start, cigar, seq) == key[3]:
+                    db.execute("""
+                        INSERT INTO support VALUES (?, ?, ?)
+                        ON CONFLICT(variant_id, read_name) DO UPDATE SET
+                            mapq=max(mapq, excluded.mapq)
+                    """, (variant_id, f[0], mapq))
+    db.commit()
+
+
+def c_status(called, counts):
+    if not called:
+        return "NOT_CALLED"
+    total, low, ambiguous, high = counts
+    if total == "NA":
+        return "UNRESOLVED_SUPPORT"
+    if total >= 2 and low == 0:
+        return "FLAGGED_NUMT_EVIDENCE"
+    return "RETAINED"
+
+
+def fmt_fraction(num, den):
+    return "NA" if den in (0, "NA") else f"{num / den:.6f}"
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sample", required=True)
+    parser.add_argument("--fullref-bam", required=True)
+    parser.add_argument("--mt-bam", required=True)
+    parser.add_argument("--gatk-a", required=True)
+    parser.add_argument("--mutserve-a", required=True)
+    parser.add_argument("--gatk-b", required=True)
+    parser.add_argument("--mutserve-b", required=True)
+    parser.add_argument("--truth", required=True)
+    parser.add_argument("--mt-contig", required=True)
+    parser.add_argument("--min-mapq", type=int, required=True)
+    args = parser.parse_args()
+
+    callsets = {
+        ("gatk", "A"): read_vcf(args.gatk_a),
+        ("mutserve2", "A"): read_vcf(args.mutserve_a),
+        ("gatk", "B"): read_vcf(args.gatk_b),
+        ("mutserve2", "B"): read_vcf(args.mutserve_b),
+    }
+    truth = read_truth(args.truth)
+    variants = set(truth)
+    for calls in callsets.values():
+        variants.update(calls)
+    variants = sorted(variants)
+    db, db_path = prepare_evidence_db()
+    supporting_fragments(db, args.mt_bam, variants, args.mt_contig)
+    fullref_evidence(db, args.fullref_bam, args.mt_contig, args.min_mapq)
+    db.executescript("""
+        CREATE TABLE evidence_final AS
+        SELECT e.*,
+               COALESCE((
+                   SELECT group_concat(value, ',') FROM (
+                       SELECT value FROM primary_contigs
+                       WHERE read_name=e.read_name ORDER BY value
+                   )
+               ), 'NA') AS primary_contig,
+               COALESCE((
+                   SELECT group_concat(value, ',') FROM (
+                       SELECT value FROM primary_mapqs
+                       WHERE read_name=e.read_name ORDER BY value
+                   )
+               ), 'NA') AS primary_mapq,
+               COALESCE((
+                   SELECT group_concat(value, ',') FROM (
+                       SELECT value FROM mate_contigs
+                       WHERE read_name=e.read_name ORDER BY value
+                   )
+               ), 'NA') AS mate_contig
+        FROM evidence e;
+        CREATE UNIQUE INDEX evidence_final_read_name ON evidence_final(read_name);
+    """)
+
+    read_out = f"{args.sample}.numt_read_evidence.tsv"
+    counts_by_variant_id = defaultdict(lambda: defaultdict(int))
+    with open(read_out, "w") as out:
+        out.write("sample\tread_name\tmt_variant\tcaller_membership\tfullref_primary_contig\tfullref_primary_mapq\tprimary_is_chrM\thas_nuclear_secondary\thas_nuclear_supplementary\tmate_contig\tmt_alignment_mapq\tnumt_evidence_status\tstrategy_b_decision\tstrategy_b_reason\toa_tag_present\tsupport_source\n")
+        query = """
+            SELECT s.variant_id, s.read_name, s.mapq,
+                   e.oa, e.nuc_secondary, e.nuc_supplementary,
+                   e.b_keep, e.nuclear_primary, e.strong_nuclear,
+                   e.nuclear_mate, e.primary_contig, e.primary_mapq,
+                   e.mate_contig
+            FROM support s
+            LEFT JOIN evidence_final e ON e.read_name=s.read_name
+            ORDER BY s.variant_id, s.read_name
+        """
+        for result in db.execute(query):
+            (variant_id, read_name, mt_mapq, oa, nuc_secondary,
+             nuc_supplementary, b_keep, nuclear_primary, strong_nuclear,
+             nuclear_mate, prim, primary_mapq, mate_contig) = result
+            key = variants[variant_id]
+            callers = ",".join(
+                caller for caller in ("gatk", "mutserve2")
+                if key in callsets[(caller, "A")]
+            ) or "none"
+            label = f"{key[0]}:{key[1]}:{key[2]}>{key[3]}"
+            if oa is None:
+                status = "AMBIGUOUS"
+                primary_is_mt = "NA"
+                prim = primary_mapq = mate_contig = "NA"
+                oa = nuc_secondary = nuc_supplementary = b_keep = 0
+                reason = "FLAG_NO_FULLREF_RECORD"
+            else:
+                if strong_nuclear:
+                    status = "HIGH"
+                elif (nuclear_primary or nuc_secondary or nuc_supplementary
+                      or nuclear_mate or not b_keep):
+                    status = "AMBIGUOUS"
+                else:
+                    status = "LOW"
+                primary_is_mt = (
+                    str(args.mt_contig in prim.split(",")).lower()
+                    if prim != "NA" else "NA"
+                )
+                reason = (
+                    "KEEP_PRIMARY_CHRM_MAPQ" if b_keep
+                    else "FLAG_NO_PRIMARY_CHRM_AT_MIN_MAPQ"
+                )
+            counts_by_variant_id[variant_id][status] += 1
+            row = [args.sample, read_name, label, callers, prim, primary_mapq,
+                   primary_is_mt, str(bool(nuc_secondary)).lower(),
+                   str(bool(nuc_supplementary)).lower(), mate_contig,
+                   str(mt_mapq), status, "KEEP" if b_keep else "FLAG", reason,
+                   str(bool(oa)).lower(), "pipeline_standard_mt_bam"]
+            out.write("\t".join(row) + "\n")
+
+    counts_by_variant = {}
+    for variant_id, key in enumerate(variants):
+        if len(key[2]) != 1 or len(key[3]) != 1:
+            counts_by_variant[key] = ("NA", "NA", "NA", "NA")
+            continue
+        status_counts = counts_by_variant_id[variant_id]
+        total = sum(status_counts.values())
+        counts_by_variant[key] = (
+            total,
+            status_counts["LOW"],
+            status_counts["AMBIGUOUS"],
+            status_counts["HIGH"],
+        )
+
+    variant_out = f"{args.sample}.numt_variant_evidence.tsv"
+    c_decisions = {}
+    with open(variant_out, "w") as out:
+        out.write("sample\tcontig\tposition\tref\talt\tcaller\ttotal_supporting_fragments\tlow_numt_evidence_fragments\tambiguous_numt_evidence_fragments\thigh_numt_evidence_fragments\tfraction_high_numt_evidence\tbaseline_status\tstrategy_b_status\tstrategy_c_status\tsupport_source\n")
+        for key in sorted(variants):
+            total, low, ambiguous, high = counts_by_variant[key]
+            for caller in ("gatk", "mutserve2"):
+                a = callsets[(caller, "A")].get(key, "NOT_CALLED")
+                b = callsets[(caller, "B")].get(key, "NOT_CALLED")
+                c = c_status(key in callsets[(caller, "A")], (total, low, ambiguous, high))
+                c_decisions[(caller, key)] = c
+                row = [args.sample, key[0], str(key[1]), key[2], key[3], caller,
+                       str(total), str(low), str(ambiguous), str(high), fmt_fraction(high, total),
+                       a, b, c, "pipeline_standard_mt_bam" if total != "NA" else "NA_non_SNV"]
+                out.write("\t".join(row) + "\n")
+
+    summary_out = f"{args.sample}.numt_strategy_comparison.tsv"
+    with open(summary_out, "w") as out:
+        out.write("sample\tcaller\tstrategy\ttrue_mt_variants_total\ttrue_mt_variants_retained\tnumt_false_signals_total\tnumt_false_signals_retained\tambiguous_cases_total\tambiguous_cases_retained\ttrue_variant_recall\tnumt_false_signal_reduction\tinterpretation_scope\n")
+        for caller in ("gatk", "mutserve2"):
+            for strategy in ("A", "B", "C"):
+                retained = {}
+                for key in truth:
+                    if strategy == "A":
+                        retained[key] = key in callsets[(caller, "A")]
+                    elif strategy == "B":
+                        retained[key] = key in callsets[(caller, "B")]
+                    else:
+                        retained[key] = c_decisions[(caller, key)] == "RETAINED"
+                true_keys = [k for k, v in truth.items() if v[0] == "TRUE_MT"]
+                false_keys = [k for k, v in truth.items() if v[0] == "NUMT_FALSE"]
+                amb_keys = [k for k, v in truth.items() if v[0] == "AMBIGUOUS"]
+                tr = sum(retained[k] for k in true_keys)
+                fr = sum(retained[k] for k in false_keys)
+                ar = sum(retained[k] for k in amb_keys)
+                recall = fmt_fraction(tr, len(true_keys))
+                reduction = fmt_fraction(len(false_keys) - fr, len(false_keys))
+                row = [args.sample, caller, strategy, str(len(true_keys)), str(tr),
+                       str(len(false_keys)), str(fr), str(len(amb_keys)), str(ar), recall,
+                       reduction, "technical_fixture_not_accuracy_estimate"]
+                out.write("\t".join(row) + "\n")
+
+    extended_out = f"{args.sample}.numt_extended_truth_validation.tsv"
+    with open(extended_out, "w") as out:
+        out.write("sample\tcaller\tstrategy\ttrue_positives\tfalse_positives\tfalse_negatives\ttruth_scope\n")
+        true_keys = {k for k, v in truth.items() if v[0] == "TRUE_MT"}
+        for caller in ("gatk", "mutserve2"):
+            for strategy in ("A", "B"):
+                observed = set(callsets[(caller, strategy)])
+                out.write("\t".join([args.sample, caller, strategy,
+                    str(len(observed & true_keys)), str(len(observed - true_keys)),
+                    str(len(true_keys - observed)), "extended_true_mt_truth"]) + "\n")
+
+    db.close()
+    os.unlink(db_path)
+
+
+if __name__ == "__main__":
+    main()

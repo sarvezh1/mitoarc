@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""Generate the tiny deterministic NUMT technical fixture."""
+
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DATA = ROOT / "test_data"
+
+CHR1_LEGACY = (
+    "CCCGGCTCGCGGGGTATTCCCGGTCTGATTGAAAGATCCTGGATGGTTATACCCTCAACCGATCCGTCTGCCGCACGCCTACGCTGGTGGGAAGTAAAAT"
+    "GTAGCGAGCCATCGACGCAGTTTGAGGTCGAACTGGCCCACAGTTCATACGAGCGGCGGGACTATCGAGCTCTACCAGCTTAGTTGTCTCTTAATAGGTG"
+    "GGGTCATCTCGGCTCTTCTTTGCTACGTTGAGGCCGCGTCAGTGGCGGATAAGCCTTTCCTAGGTTCTATTTTCCCTTAAAGGGAGGCTAGGAGTTCCGT"
+)
+CHRM = (
+    "TTTTGAGTGAAGTAAAGGAATTTGTTATAGAATCGAAAAGTATCTATGCCACGGACCGTGCCGTGGAGGAGGTCTAATCGAATCATTCACCAGCCATTTC"
+    "AGGTTGCCCCCTACCGAGCTCTCGCATTCGGTCCACATGGGAGACATCTCCGATGCCTGAACCAACGCTCAATGCAAGCGTTGTAAACAATTTCTATATT"
+    "ACTGGGTGTGCTCACCGCCTAGGACGGTTCGGATTAGATCAGGACCCTATAGATATGCGAGGTTCGGGACAAGCTCCAGAGCGGGGCCCTACGTCTTGAA"
+    "TATAGGTCATGTTATTGCCAGCAACACCATCCAAAGCACTCGTGACCGCTAGTACAAGAGCTATGTCCGCATAACTTGGGCCGTGTCCTGCGCATCTTAT"
+    "GCTCTTTTTCGATACCTGTTACGAAACAAATTTCCCGGCGTCGAGGATAGTTGGTGGCGTGAGAGCGAGTACGACCTATGGTCCGTTGTACCTTCCCTCG"
+)
+RC = str.maketrans("ACGT", "TGCA")
+
+
+def revcomp(seq):
+    return seq.translate(RC)[::-1]
+
+
+def mutate(seq, one_based_pos, alt):
+    return seq[: one_based_pos - 1] + alt + seq[one_based_pos:]
+
+
+def circular_slice(seq, one_based_start, length):
+    return "".join(seq[(one_based_start - 1 + i) % len(seq)] for i in range(length))
+
+
+def write_fasta(path, records):
+    with path.open("w") as handle:
+        for name, seq in records:
+            handle.write(f">{name}\n")
+            for start in range(0, len(seq), 100):
+                handle.write(seq[start : start + 100] + "\n")
+
+
+def add_pair(r1, r2, name, seq1, seq2):
+    quality1 = "I" * len(seq1)
+    quality2 = "I" * len(seq2)
+    r1.extend([f"@{name}/1", seq1, "+", quality1])
+    r2.extend([f"@{name}/2", seq2, "+", quality2])
+
+
+def main():
+    # chr1: legacy sequence + 50-bp unique left flank + 170-bp chrM-like insert
+    # (chrM:280-449) + 100-bp unique right flank.  The insert carries a
+    # distinguishing allele at chrM-equivalent position 280, outside the
+    # equal-competition false-signal fragments below.
+    left_flank = "AGACCTGACCTAGGTCACGTTAGGCACTGATCGTACCGATGACCTTAGCA"
+    right_flank = (
+        "CGATGGTACCTAGTCGACGTTACCGGATTCAGTACCGATGCTAGGCTAAC"
+        "TTCGAGGATCCGTTAGCATGACCTGATCGTAGGCTAACGTTACCGATGCA"
+    )
+    numt_distinguishing_alt = "C" if CHRM[279] != "C" else "A"
+    numt = mutate(CHRM[279:449], 1, numt_distinguishing_alt)
+    chr1 = CHR1_LEGACY + left_flank + numt + right_flank
+    # chrM is first solely to make BWA's tie choice deterministic for reads
+    # that are genuinely equally compatible with chrM and the chr1 NUMT.
+    write_fasta(DATA / "fixture-reference.fa", [("chrM", CHRM), ("chr1", chr1)])
+
+    mt_std = mutate(CHRM, 200, "C")
+    mt_boundary = mutate(CHRM, 25, "C")
+    mt_true = mutate(CHRM, 120, "A" if CHRM[119] != "A" else "C")
+    true_alt = mt_true[119]
+    r1, r2 = [], []
+
+    # Frozen legacy truth groups.
+    for i in range(12):
+        add_pair(r1, r2, f"STD{i + 1:02d}", mt_std[129 + i : 229 + i], revcomp(mt_std[209 + i : 309 + i]))
+        add_pair(
+            r1,
+            r2,
+            f"BND{i + 1:02d}",
+            circular_slice(mt_boundary, 446 + (i % 6), 100),
+            revcomp(circular_slice(mt_boundary, 1, 100)),
+        )
+    for i in range(4):
+        add_pair(r1, r2, f"AUTO{i + 1:02d}", chr1[39 + i : 139 + i], revcomp(chr1[89 + i : 189 + i]))
+
+    # Separate frozen Blocks 5A/5B regression fixture. It is run to its own
+    # outdir so intentional fixture calls are not mislabelled as legacy FPs.
+    write_fasta(DATA / "fixture-reference-legacy.fa", [("chr1", CHR1_LEGACY), ("chrM", CHRM)])
+    (DATA / "TEST_legacy_R1.fastq").write_text("\n".join(r1) + "\n")
+    (DATA / "TEST_legacy_R2.fastq").write_text("\n".join(r2) + "\n")
+    (DATA / "samplesheet_legacy.csv").write_text(
+        "sample,fastq_1,fastq_2\nTEST,test_data/TEST_legacy_R1.fastq,test_data/TEST_legacy_R2.fastq\n"
+    )
+
+    # Genuine mtDNA signal outside the NUMT-like interval.
+    for i in range(12):
+        add_pair(r1, r2, f"TRUE{i + 1:02d}", mt_true[69 + i : 169 + i], revcomp(mt_true[369 + i : 469 + i]))
+
+    # Nuclear-origin reads from the NUMT interior. A synthetic nuclear
+    # polymorphism at chrM-equivalent 350 creates an apparent mtDNA ALT. Both
+    # reference placements have one mismatch, producing real competition.
+    numt_false_alt = "A" if CHRM[349] != "A" else "C"
+    chr1_numt_haplotype = mutate(chr1, 421, numt_false_alt)
+    for i in range(16):
+        offset = i % 4
+        add_pair(
+            r1,
+            r2,
+            f"NUMT{i + 1:02d}",
+            chr1_numt_haplotype[370 + offset : 470 + offset],
+            revcomp(chr1_numt_haplotype[380 + offset : 480 + offset]),
+        )
+
+    # Same physical compatibility, but origin is deliberately unspecified.
+    ambiguous_alt = "A" if CHRM[369] != "A" else "C"
+    for i in range(8):
+        offset = i % 4
+        seq1 = chr1[370 + offset : 470 + offset]
+        qpos = 370 - (300 + offset)
+        seq1 = seq1[:qpos] + ambiguous_alt + seq1[qpos + 1 :]
+        seq2_forward = chr1[380 + offset : 480 + offset]
+        mate_qpos = 370 - (310 + offset)
+        seq2_forward = seq2_forward[:mate_qpos] + ambiguous_alt + seq2_forward[mate_qpos + 1 :]
+        seq2 = revcomp(seq2_forward)
+        add_pair(r1, r2, f"AMB{i + 1:02d}", seq1, seq2)
+
+    (DATA / "TEST_fixture_R1.fastq").write_text("\n".join(r1) + "\n")
+    (DATA / "TEST_fixture_R2.fastq").write_text("\n".join(r2) + "\n")
+    (DATA / "fixture_truth_extended.tsv").write_text(
+        "contig\tpos\tref\talt\tbranch\n"
+        f"chrM\t25\t{CHRM[24]}\tC\tshifted\n"
+        f"chrM\t120\t{CHRM[119]}\t{true_alt}\tstandard\n"
+        f"chrM\t200\t{CHRM[199]}\tC\tstandard\n"
+    )
+    (DATA / "numt_fixture_truth.tsv").write_text(
+        "contig\tpos\tref\talt\ttruth_class\tcase_id\tgenerating_origin\n"
+        f"chrM\t25\t{CHRM[24]}\tC\tTRUE_MT\tBOUNDARY_TRUTH\tchrM\n"
+        f"chrM\t120\t{CHRM[119]}\t{true_alt}\tTRUE_MT\tTRUE_MT_NEW\tchrM\n"
+        f"chrM\t200\t{CHRM[199]}\tC\tTRUE_MT\tSTANDARD_TRUTH\tchrM\n"
+        f"chrM\t350\t{CHRM[349]}\t{numt_false_alt}\tNUMT_FALSE\tNUMT_DERIVED\tchr1\n"
+        f"chrM\t370\t{CHRM[369]}\t{ambiguous_alt}\tAMBIGUOUS\tAMBIGUOUS_ORIGIN\tchr1_or_chrM\n"
+    )
+    (DATA / "fixture_read_design.tsv").write_text(
+        "read_prefix\tpairs\tpurpose\tcanonical_variant\tgenerating_origin\texpected_fullref_context\n"
+        "STD\t12\tlegacy_standard_truth\tchrM:200:T>C\tchrM\tprimary_chrM\n"
+        "BND\t12\tlegacy_circular_boundary_truth\tchrM:25:T>C\tchrM\tprimary_chrM_with_split_boundary\n"
+        "AUTO\t4\tautosomal_coverage\tNA\tchr1\tprimary_chr1\n"
+        f"TRUE\t12\tnew_true_mtDNA_variant\tchrM:120:{CHRM[119]}>{true_alt}\tchrM\tprimary_chrM\n"
+        f"NUMT\t16\tnuclear_derived_false_signal\tchrM:350:{CHRM[349]}>{numt_false_alt}\tchr1\tequal_chrM_chr1_NUMT_competition\n"
+        f"AMB\t8\tambiguous_compartment_case\tchrM:370:{CHRM[369]}>{ambiguous_alt}\tchr1_or_chrM\tequal_chrM_chr1_NUMT_competition\n"
+    )
+
+
+if __name__ == "__main__":
+    main()

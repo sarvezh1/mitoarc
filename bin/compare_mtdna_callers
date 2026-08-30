@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+sample=$1
+gatk_raw=$2
+gatk_filtered=$3
+mutserve2=$4
+truth=$5
+comparison=$6
+summary=$7
+
+bcftools query -f '%CHROM\t%POS\t%REF\t%ALT[\t%DP\t%AF]\n' "$gatk_raw" > gatk_raw.tsv
+bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%FILTER\n' "$gatk_filtered" > gatk_filtered.tsv
+bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%FILTER[\t%DP\t%AF]\n' "$mutserve2" > mutserve2.tsv
+
+awk -F '\t' -v OFS='\t' -v sample="$sample" -v comparison="$comparison" -v summary="$summary" '
+    BEGIN {
+        sort_command = "sort -k2,2 -k3,3n -k4,4 -k5,5 >> \"" comparison "\""
+    }
+    FILENAME == ARGV[1] {
+        key = $1 FS $2 FS $3 FS $4
+        keys[key] = 1
+        g[key] = 1
+        gd[key] = ($5 == "" || $5 == ".") ? "NA" : $5
+        ga[key] = ($6 == "" || $6 == ".") ? "NA" : $6
+        next
+    }
+    FILENAME == ARGV[2] {
+        key = $1 FS $2 FS $3 FS $4
+        gf[key] = ($5 == "" || $5 == ".") ? "UNFILTERED" : $5
+        next
+    }
+    FILENAME == ARGV[3] {
+        key = $1 FS $2 FS $3 FS $4
+        keys[key] = 1
+        m[key] = 1
+        ms[key] = ($5 == "" || $5 == ".") ? "UNFILTERED" : $5
+        md[key] = ($6 == "" || $6 == ".") ? "NA" : $6
+        ma[key] = ($7 == "" || $7 == ".") ? "NA" : $7
+        next
+    }
+    FILENAME == ARGV[4] && FNR > 1 {
+        key = $1 FS $2 FS $3 FS $4
+        keys[key] = 1
+        t[key] = 1
+        truth_n++
+        next
+    }
+    END {
+        print "sample", "contig", "position", "ref", "alt", "in_gatk", "gatk_status", "gatk_depth", "gatk_vaf", "in_mutserve2", "mutserve2_status", "mutserve2_depth", "mutserve2_vaf", "truth_status" > comparison
+        for (key in keys) {
+            split(key, f, FS)
+            in_g = (key in g) ? "true" : "false"
+            in_m = (key in m) ? "true" : "false"
+            g_status = (key in gf) ? gf[key] : ((key in g) ? "NOT_IN_FILTERED_VCF" : "NA")
+            m_status = (key in m) ? ms[key] : "NA"
+            truth_status = (truth_n == 0) ? "NA" : ((key in t) ? "truth" : "not_truth")
+            print sample, f[1], f[2], f[3], f[4], in_g, g_status, ((key in g) ? gd[key] : "NA"), ((key in g) ? ga[key] : "NA"), in_m, m_status, ((key in m) ? md[key] : "NA"), ((key in m) ? ma[key] : "NA"), truth_status | sort_command
+
+            if ((key in g) && (key in m)) shared++
+            else if (key in g) gatk_only++
+            else if (key in m) mutserve2_only++
+
+            if (key in t) {
+                if (key in g) gatk_tp++; else gatk_fn++
+                if (key in m) mutserve2_tp++; else mutserve2_fn++
+            } else {
+                if (key in g) gatk_fp++
+                if (key in m) mutserve2_fp++
+            }
+        }
+        close(sort_command)
+        print "sample", "gatk_tp", "gatk_fp", "gatk_fn", "mutserve2_tp", "mutserve2_fp", "mutserve2_fn", "shared_calls", "gatk_only_calls", "mutserve2_only_calls" > summary
+        if (truth_n == 0) {
+            print sample, "NA", "NA", "NA", "NA", "NA", "NA", shared + 0, gatk_only + 0, mutserve2_only + 0 > summary
+        } else {
+            print sample, gatk_tp + 0, gatk_fp + 0, gatk_fn + 0, mutserve2_tp + 0, mutserve2_fp + 0, mutserve2_fn + 0, shared + 0, gatk_only + 0, mutserve2_only + 0 > summary
+        }
+    }
+' gatk_raw.tsv gatk_filtered.tsv mutserve2.tsv "$truth"

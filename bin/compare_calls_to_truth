@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+sample=$1
+calls=$2
+truth=$3
+summary=$4
+details=$5
+
+awk -F '\t' -v OFS='\t' -v sample="$sample" -v summary="$summary" -v details="$details" '
+    FILENAME == ARGV[1] && FNR > 1 {
+        key = $1 FS $2 FS $3 FS $4
+        truth_key[key] = 1
+        truth_contig[++truth_n] = $1
+        truth_pos[truth_n] = $2
+        truth_ref[truth_n] = $3
+        truth_alt[truth_n] = $4
+        next
+    }
+    FILENAME == ARGV[2] && FNR > 1 {
+        key = $2 FS $3 FS $4 FS $5
+        observed[key] = 1
+        depth[key] = $6
+        vaf[key] = $8
+        if (!(key in truth_key)) fp++
+        next
+    }
+    END {
+        print "sample", "contig", "position", "ref", "alt", "truth_status", "depth", "vaf" > details
+        for (i = 1; i <= truth_n; i++) {
+            key = truth_contig[i] FS truth_pos[i] FS truth_ref[i] FS truth_alt[i]
+            if (key in observed) {
+                status = "TP"
+                tp++
+                d = depth[key]
+                a = vaf[key]
+            } else {
+                status = "FN"
+                fn++
+                d = "NA"
+                a = "NA"
+            }
+            print sample, truth_contig[i], truth_pos[i], truth_ref[i], truth_alt[i], status, d, a > details
+        }
+        print "sample", "true_positives", "false_positives", "false_negatives" > summary
+        print sample, tp + 0, fp + 0, fn + 0 > summary
+    }
+' "$truth" "$calls"

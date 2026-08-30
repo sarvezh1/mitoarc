@@ -1,0 +1,7 @@
+read_prefix	pairs	purpose	canonical_variant	generating_origin	expected_fullref_context
+STD	12	legacy_standard_truth	chrM:200:T>C	chrM	primary_chrM
+BND	12	legacy_circular_boundary_truth	chrM:25:T>C	chrM	primary_chrM_with_split_boundary
+AUTO	4	autosomal_coverage	NA	chr1	primary_chr1
+TRUE	12	new_true_mtDNA_variant	chrM:120:T>A	chrM	primary_chrM
+NUMT	16	nuclear_derived_false_signal	chrM:350:T>A	chr1	equal_chrM_chr1_NUMT_competition
+AMB	8	ambiguous_compartment_case	chrM:370:C>A	chr1_or_chrM	equal_chrM_chr1_NUMT_competition

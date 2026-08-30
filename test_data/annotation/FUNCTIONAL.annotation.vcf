@@ -1,0 +1,13 @@
+##fileformat=VCFv4.2
+##reference=NC_012920.1
+##contig=<ID=chrM,length=16569>
+##FILTER=<ID=PASS,Description="Functional fixture">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=AF,Number=A,Type=Float,Description="Fixture alternate allele fraction">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Fixture depth">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	FUNCTIONAL
+chrM	73	.	A	G	.	PASS	.	GT:AF:DP	1:1.00:100
+chrM	1555	.	A	G	.	PASS	.	GT:AF:DP	0/1:0.40:100
+chrM	3243	.	A	G	.	PASS	.	GT:AF:DP	0/1:0.25:100
+chrM	3312	.	C	T	.	PASS	.	GT:AF:DP	0/1:0.50:100
+chrM	3314	.	T	C	.	PASS	.	GT:AF:DP	0/1:0.98:100

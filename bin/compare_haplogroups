@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""Combine caller-specific assignments and describe their tree relationship."""
+
+import csv
+import sys
+import xml.etree.ElementTree as ET
+
+sample, gatk_file, mutserve_file, tree_xml, combined, comparison, tree_name = sys.argv[1:]
+
+def read_one(path):
+    with open(path, newline="") as handle:
+        return next(csv.DictReader(handle, delimiter="\t"))
+
+gatk = read_one(gatk_file)
+mutserve = read_one(mutserve_file)
+fields = list(gatk.keys())
+with open(combined, "w", newline="") as out:
+    writer = csv.DictWriter(out, fields, delimiter="\t", lineterminator="\n")
+    writer.writeheader()
+    writer.writerow(gatk)
+    writer.writerow(mutserve)
+
+relationship = "unavailable"
+g_hg, m_hg = gatk["haplogroup"], mutserve["haplogroup"]
+if gatk["status"] == "AVAILABLE" and mutserve["status"] == "AVAILABLE":
+    if g_hg == m_hg:
+        relationship = "identical"
+    else:
+        root = ET.parse(tree_xml).getroot()
+        parent = {child: node for node in root.iter() for child in node}
+        by_name = {node.attrib.get("name"): node for node in root.iter() if node.attrib.get("name")}
+        def ancestors(name):
+            values = set()
+            node = by_name.get(name)
+            while node is not None:
+                node_name = node.attrib.get("name")
+                if node_name:
+                    values.add(node_name)
+                node = parent.get(node)
+            return values
+        if g_hg in ancestors(m_hg) or m_hg in ancestors(g_hg):
+            relationship = "compatible_parent_child"
+        else:
+            relationship = "discordant"
+
+with open(comparison, "w", newline="") as out:
+    writer = csv.writer(out, delimiter="\t", lineterminator="\n")
+    writer.writerow(["sample", "gatk_haplogroup", "mutserve2_haplogroup",
+                     "relationship", "reference_tree"])
+    writer.writerow([sample, g_hg, m_hg, relationship, tree_name])
+

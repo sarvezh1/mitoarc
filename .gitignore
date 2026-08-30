@@ -1,0 +1,67 @@
+# Nextflow runtime state and generated results
+.nextflow*
+work/
+work_*/
+results/
+results_*/
+*.log
+
+# Local validation, manuscript workspace, and release audit
+/validation/
+/manuscript/
+/release_audit/
+
+# Generated benchmark state; compact public summaries remain elsewhere
+/benchmark/runs/
+/benchmark/generated/
+/benchmark/logs/
+/benchmark/metrics/
+/benchmark/plots/
+/benchmark/datasets/*
+!/benchmark/datasets/.gitkeep
+
+# Large sequencing and reference material (compact test fixtures are force-included)
+*.fastq
+*.fastq.gz
+*.fq
+*.fq.gz
+*.bam
+*.bai
+*.cram
+*.crai
+*.sam
+*.fasta
+*.fasta.gz
+*.fa.gz
+*.fai
+!test_data/**
+!resources/**
+
+# Temporary databases, caches, environments, and local secrets
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.lock
+*.pyc
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editors and operating systems
+.idea/
+.vscode/
+*~
+*.swp
+.DS_Store
+Thumbs.db

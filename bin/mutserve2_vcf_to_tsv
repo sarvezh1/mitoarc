@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+sample=$1
+vcf=$2
+output=$3
+
+printf 'sample\tcontig\tposition\tref\talt\tdepth\talt_depth\tvaf\tstatus\n' > "$output"
+bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%FILTER[\t%DP\t%AF]\n' "$vcf" \
+  | awk -F '\t' -v OFS='\t' -v sample="$sample" '
+      {
+          depth = ($6 == "" || $6 == ".") ? "NA" : $6
+          vaf = ($7 == "" || $7 == ".") ? "NA" : $7
+          status = ($5 == "" || $5 == ".") ? "UNFILTERED" : $5
+          print sample, $1, $2, $3, $4, depth, "NA", vaf, status
+      }
+    ' >> "$output"

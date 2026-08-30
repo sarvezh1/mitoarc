@@ -1,0 +1,3 @@
+truth_id	chrom	pos	ref	alt	variant_class	target_vaf	achieved_vaf	alt_fragments	ref_fragments	depth	gatk_emitted	mutserve_native_emitted	mutserve_canonical_emitted	benchmark_parser_emitted	classification	frozen_command_indel_options
+POS_INS	chrM	8000	G	GA	insertion	0.25	0.2283702213	227	767	1000	true	false	false	false	MUTSERVE2_INDEL_NOT_EMITTED_BY_FROZEN_MODE	insertions=false;deletions=false
+POS_DEL	chrM	9000	AC	A	deletion	0.25	0.2443991853	240	742	1000	true	false	false	false	MUTSERVE2_INDEL_NOT_EMITTED_BY_FROZEN_MODE	insertions=false;deletions=false

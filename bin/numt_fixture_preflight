@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""Report deterministic read-group paths through the NUMT fixture."""
+
+import argparse
+import subprocess
+from collections import defaultdict
+
+
+def sam_groups(path, mt_contig):
+    groups = defaultdict(lambda: {"names": set(), "primary": set(), "mapq": set(), "mates": set(), "nuclear_alt": False})
+    proc = subprocess.Popen(["samtools", "view", path], stdout=subprocess.PIPE, text=True)
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        f = line.rstrip().split("\t")
+        name, flag, contig, mapq, mate = f[0], int(f[1]), f[2], f[4], f[6]
+        prefix = name.rstrip("0123456789")
+        item = groups[prefix]
+        item["names"].add(name)
+        if not flag & (0x100 | 0x800):
+            item["primary"].add(contig)
+            item["mapq"].add(mapq)
+            item["mates"].add(contig if mate == "=" else mate)
+        if (flag & (0x100 | 0x800)) and contig not in ("*", mt_contig):
+            item["nuclear_alt"] = True
+        for tag in f[11:]:
+            if tag.startswith(("XA:Z:", "SA:Z:")):
+                for alt in tag[5:].split(";"):
+                    if alt and alt.split(",", 1)[0] != mt_contig:
+                        item["nuclear_alt"] = True
+    if proc.wait() != 0:
+        raise RuntimeError(f"samtools view failed for {path}")
+    return groups
+
+
+def joined(values):
+    values = {v for v in values if v not in ("", "*")}
+    return ",".join(sorted(values)) if values else "NA"
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--sample", required=True)
+    p.add_argument("--design", required=True)
+    p.add_argument("--fullref", required=True)
+    p.add_argument("--extracted", required=True)
+    p.add_argument("--standard", required=True)
+    p.add_argument("--shifted", required=True)
+    p.add_argument("--mt-contig", required=True)
+    args = p.parse_args()
+    stages = {name: sam_groups(path, args.mt_contig) for name, path in (
+        ("full", args.fullref), ("extracted", args.extracted),
+        ("standard", args.standard), ("shifted", args.shifted))}
+    output = f"{args.sample}.numt_fixture_validation.tsv"
+    with open(args.design) as handle, open(output, "w") as out:
+        header = handle.readline().rstrip().split("\t")
+        idx = {name: i for i, name in enumerate(header)}
+        out.write("sample\tread_group\tpairs\tgenerating_origin\texpected_allele\texpected_fullref_context\tfullref_primary_contig\tfullref_primary_mapq\thas_nuclear_alternative\tmate_contig\tfullref_fragments_observed\tenters_mtDNA_extraction\textracted_fragments\tenters_standard_realign\tstandard_fragments\tenters_shifted_realign\tshifted_fragments\n")
+        for line in handle:
+            f = line.rstrip().split("\t")
+            prefix = f[idx["read_prefix"]]
+            full = stages["full"].get(prefix, {})
+            counts = {stage: len(stages[stage].get(prefix, {}).get("names", set())) for stage in stages}
+            row = [args.sample, prefix, f[idx["pairs"]], f[idx["generating_origin"]],
+                   f[idx["canonical_variant"]], f[idx["expected_fullref_context"]],
+                   joined(full.get("primary", set())), joined(full.get("mapq", set())),
+                   str(full.get("nuclear_alt", False)).lower(), joined(full.get("mates", set())),
+                   str(counts["full"]), str(counts["extracted"] > 0).lower(), str(counts["extracted"]),
+                   str(counts["standard"] > 0).lower(), str(counts["standard"]),
+                   str(counts["shifted"] > 0).lower(), str(counts["shifted"])]
+            out.write("\t".join(row) + "\n")
+
+
+if __name__ == "__main__":
+    main()

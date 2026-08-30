@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""Validate that the MultiQC result is local, non-empty, and portable."""
+
+import argparse
+import csv
+import re
+import sys
+from pathlib import Path
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--report", required=True)
+    parser.add_argument("--data", required=True)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args()
+    text = Path(args.report).read_text(encoding="utf-8", errors="replace")
+    data_text = []
+    for path in Path(args.data).rglob("*"):
+        if path.is_file():
+            try:
+                data_text.append(path.read_text(encoding="utf-8"))
+            except UnicodeDecodeError:
+                pass
+    combined_data = "\n".join(data_text)
+    checks = [
+        ("report_nonempty", Path(args.report).stat().st_size > 10000, True),
+        ("data_directory_nonempty", Path(args.data).is_dir() and any(Path(args.data).iterdir()), True),
+        ("external_asset_dependencies",
+         len(re.findall(r"<(?:script|img|link)[^>]+(?:src|href)=['\"]https?://", text, flags=re.I)), 0),
+        ("private_path_leaks", sum(token in text for token in ["/mnt/", "/home/", "file://"]), 0),
+        ("data_private_path_leaks",
+         sum(token in combined_data for token in ["/mnt/", "/home/", "file://"]), 0),
+    ]
+    with open(args.output, "w", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        writer.writerow(["report", "check", "observed", "expected", "status"])
+        for name, observed, expected in checks:
+            writer.writerow(["multiqc_report.html", name, observed, expected,
+                             "PASS" if observed == expected else "FAIL"])
+    if any(observed != expected for _, observed, expected in checks):
+        sys.exit("MultiQC report validation failed")
+
+
+if __name__ == "__main__":
+    main()

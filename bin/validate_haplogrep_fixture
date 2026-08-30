@@ -1,0 +1,26 @@
+#!/usr/bin/env python3
+import csv
+import sys
+
+observed_file, expected_file, output_file = sys.argv[1:]
+with open(observed_file, newline="") as handle:
+    observed = next(csv.DictReader(handle, delimiter="\t"))
+with open(expected_file, newline="") as handle:
+    expected = next(csv.DictReader(handle, delimiter="\t"))
+
+checks = [
+    ("haplogroup", observed["haplogroup"], expected["haplogroup"]),
+    ("quality", observed["quality"], expected["quality"]),
+    ("reference_tree", observed["reference_tree"], expected["reference_tree"]),
+    ("status", observed["status"], "AVAILABLE"),
+]
+with open(output_file, "w", newline="") as out:
+    writer = csv.writer(out, delimiter="\t", lineterminator="\n")
+    writer.writerow(["fixture", "check", "observed", "expected", "status"])
+    for check, observed_value, expected_value in checks:
+        writer.writerow([expected["sample"], check, observed_value, expected_value,
+                         "PASS" if observed_value == expected_value else "FAIL"])
+
+if any(observed_value != expected_value for _, observed_value, expected_value in checks):
+    sys.exit("HaploGrep functional fixture did not match its pinned expectation")
+

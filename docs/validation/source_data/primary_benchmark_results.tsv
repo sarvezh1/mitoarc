@@ -1,0 +1,7 @@
+hypothesis	comparison	metric_scope	tp	fp	fn	precision	recall	f1	key_interpretation
+H1	GATK Strategy A	OBSERVABLE_NUMT_ASSOCIATED_FP	193	33	23	0.853982	0.893519	0.873303	Observable NUMT FP retained; higher recall
+H1	GATK Strategy B	OBSERVABLE_NUMT_ASSOCIATED_FP	172	0	44	1.000000	0.796296	0.886598	Zero observable NUMT FP; lower recall
+H3	GATK 100x to 5000x	TOTAL_EXACT_TRUTH_FP	80 to 99	12 to 0	28 to 9	0.870 to 1.000	0.741 to 0.917	0.800 to 0.957	Recall/VAF accuracy increased with diminishing gains
+H3	mutserve2 100x to 5000x	TOTAL_EXACT_TRUTH_FP	36 to 57	0 to 3	72 to 51	1.000 to 0.950	0.333 to 0.528	0.500 to 0.678	Recall changed little above 1000x
+H4	GATK pooled Strategy A	TOTAL_EXACT_TRUTH_FP	548	33	100	0.943201	0.845679	0.891782	Higher recovery in frozen comparison
+H4	mutserve2 pooled Strategy A	TOTAL_EXACT_TRUTH_FP	311	17	337	0.948171	0.479938	0.637295	Indel modes disabled; 17 total FP despite zero observable NUMT FP

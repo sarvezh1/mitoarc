@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+import argparse, gzip, subprocess
+
+def run(*args):
+    return subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=True).stdout
+
+def lines(path):
+    opener = gzip.open if str(path).endswith('.gz') else open
+    with opener(path, 'rt') as handle:
+        yield from handle
+
+def values(path, key=None, get_filter=False):
+    found = set()
+    for line in lines(path):
+        if line.startswith('#'): continue
+        f = line.rstrip().split('\t')
+        if get_filter: found.add(f[6]); continue
+        info = dict(x.split('=', 1) if '=' in x else (x, 'true') for x in f[7].split(';'))
+        found.add(info.get(key, '.'))
+    return ','.join(sorted(found)) if found else 'NA'
+
+def count_oa_records(path):
+    process = subprocess.Popen(
+        ('samtools', 'view', path),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    count = 0
+    assert process.stdout is not None
+    for row in process.stdout:
+        count += any(field.startswith('OA:Z:') for field in row.rstrip().split('\t')[11:])
+    stderr = process.stderr.read() if process.stderr is not None else ''
+    returncode = process.wait()
+    if returncode:
+        raise subprocess.CalledProcessError(
+            returncode,
+            ('samtools', 'view', path),
+            stderr=stderr,
+        )
+    return count
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument('--sample', required=True); p.add_argument('--raw', required=True)
+    p.add_argument('--filtered', required=True); p.add_argument('--mt-bam', required=True)
+    a = p.parse_args()
+    mutect_help = run('gatk', 'Mutect2', '--showHidden', 'true', '--help')
+    filter_help = run('gatk', 'FilterMutectCalls', '--showHidden', 'true', '--help')
+    version_lines = run('gatk', '--version').strip().splitlines()
+    version = next((x for x in version_lines if 'Genome Analysis Toolkit' in x), version_lines[-1])
+    headers = [x for x in lines(a.raw) if x.startswith('##')]
+    filtered_headers = [x for x in lines(a.filtered) if x.startswith('##')]
+    oa = count_oa_records(a.mt_bam)
+    rows = [
+      ('raw_vcf_header','OCM',str(any(x.startswith('##INFO=<ID=OCM,') for x in headers)).lower(),'Original-contig-mismatch count annotation'),
+      ('raw_vcf_header','MMQ',str(any(x.startswith('##INFO=<ID=MMQ,') for x in headers)).lower(),'Median mapping quality by allele'),
+      ('filtered_vcf_header','possible_numt',str(any(x.startswith('##FILTER=<ID=possible_numt,') for x in filtered_headers)).lower(),'NuMT-related filter definition present'),
+      ('raw_vcf_records','OCM',values(a.raw,'OCM'),'Observed values'),
+      ('raw_vcf_records','MMQ',values(a.raw,'MMQ'),'Observed values'),
+      ('raw_vcf_records','FILTER',values(a.raw,get_filter=True),'Observed raw filters'),
+      ('filtered_vcf_records','FILTER',values(a.filtered,get_filter=True),'Observed final filters'),
+      ('standard_mt_bam','OA_records',str(oa),'Original-alignment tags available to Mutect2'),
+      ('pinned_help','median_autosomal_coverage_option',str('--autosomal-coverage' in mutect_help or '--autosomal-coverage' in filter_help).lower(),'Exact option search in pinned help'),
+    ]
+    with open(f'{a.sample}.gatk_4.6.2.0_numt_audit.tsv','w') as out:
+        out.write('sample\ttool_version\tscope\tfield\tpresent_or_value\tinterpretation\n')
+        for row in rows: out.write('\t'.join((a.sample,version,*row))+'\n')
+
+if __name__ == '__main__': main()

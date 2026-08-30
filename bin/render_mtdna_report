@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""Create a self-contained research report from reporting contracts and local plots."""
+
+import argparse
+import base64
+import csv
+import html
+from pathlib import Path
+
+VERSION = "1.0.0"
+NA = "NA"
+
+
+def read_rows(path):
+    with open(path, newline="") as handle:
+        return list(csv.DictReader(handle, delimiter="\t"))
+
+
+def esc(value):
+    return html.escape(str(value if value not in {None, ""} else NA))
+
+
+def image_data(path):
+    encoded = base64.b64encode(Path(path).read_bytes()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+def icon_data(path):
+    encoded = base64.b64encode(Path(path).read_bytes()).decode("ascii")
+    return f"data:image/svg+xml;base64,{encoded}"
+
+
+def metric(label, value, note=""):
+    return (f'<div class="metric"><span class="metric-label">{esc(label)}</span>'
+            f'<strong>{esc(value)}</strong><small>{esc(note)}</small></div>')
+
+
+def key_value_table(entries):
+    body = "".join(f"<tr><th>{esc(label)}</th><td>{esc(value)}</td></tr>" for label, value in entries)
+    return f'<div class="table-wrap"><table class="key-value"><tbody>{body}</tbody></table></div>'
+
+
+def data_table(rows, columns, table_id, empty_message="No rows available.", filterable=False):
+    if not rows:
+        return f'<p class="empty">{esc(empty_message)}</p>'
+    controls = (f'<label class="filter">Filter rows <input type="search" data-table="{table_id}" '
+                f'placeholder="Type to filter"></label>') if filterable else ""
+    headings = "".join(f'<th scope="col" data-sort="{index}">{esc(label)}</th>'
+                       for index, (_, label) in enumerate(columns))
+    body = []
+    for row in rows:
+        cells = "".join(f"<td>{esc(row.get(key, NA))}</td>" for key, _ in columns)
+        body.append(f"<tr>{cells}</tr>")
+    return (controls + f'<div class="table-wrap"><table id="{table_id}" class="data-table">'
+            f"<thead><tr>{headings}</tr></thead><tbody>{''.join(body)}</tbody></table></div>")
+
+
+def plot_panel(title, path, alt):
+    return (f'<figure class="plot"><h3>{esc(title)}</h3>'
+            f'<img src="{image_data(path)}" alt="{esc(alt)}"></figure>')
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sample", required=True)
+    parser.add_argument("--summary", required=True)
+    parser.add_argument("--variants", required=True)
+    parser.add_argument("--comparison", required=True)
+    parser.add_argument("--mitoplot", required=True)
+    parser.add_argument("--depth-plot", required=True)
+    parser.add_argument("--threshold-plot", required=True)
+    parser.add_argument("--vaf-plot", required=True)
+    parser.add_argument("--consequence-plot", required=True)
+    parser.add_argument("--caller-plot", required=True)
+    parser.add_argument("--icon", required=True)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args()
+
+    summary = read_rows(args.summary)[0]
+    variants = read_rows(args.variants)
+    comparison = read_rows(args.comparison)
+    brand_icon = icon_data(args.icon)
+    compatible = summary["reference_compatibility"] == "CANONICAL_NC_012920.1"
+    status_class = "status-ok" if compatible else "status-warning"
+    status_text = ("Canonical human mtDNA reference compatibility confirmed." if compatible else
+                   "Reference incompatible with canonical human mtDNA; biological annotation and "
+                   "circular genome interpretation are unavailable. Technical metrics remain visible.")
+
+    overview_metrics = "".join([
+        metric("Mean mtDNA depth", summary["mean_mt_depth"], "×"),
+        metric("Median mtDNA depth", summary["median_mt_depth"], "×"),
+        metric("Bases ≥10×", summary["pct_mt_ge_10x"], "%"),
+        metric("Copy-number proxy", summary["mtdna_copy_number_proxy"]),
+        metric("GATK variants", summary["gatk_total_variants"]),
+        metric("mutserve2 variants", summary["mutserve2_total_variants"]),
+        metric("GATK haplogroup", summary["gatk_haplogroup"]),
+        metric("mutserve2 haplogroup", summary["mutserve2_haplogroup"]),
+        metric("NUMT-risk rows", summary["numt_flagged_caller_rows"]),
+    ])
+
+    variant_columns = [
+        ("position", "Position"), ("ref", "REF"), ("alt", "ALT"), ("gene", "Gene"),
+        ("feature_type", "Feature"), ("consequence", "Consequence"),
+        ("protein_change", "Protein change"), ("caller", "Caller"), ("depth", "Depth"),
+        ("vaf", "VAF"), ("variant_state", "Variant state"),
+        ("numt_evidence_status", "NUMT evidence"), ("filter_status", "Filter"),
+    ]
+    comparison_columns = [
+        ("position", "Position"), ("ref", "REF"), ("alt", "ALT"),
+        ("callset_relationship", "Relationship"), ("gatk_status", "GATK status"),
+        ("gatk_depth", "GATK depth"), ("gatk_vaf", "GATK VAF"),
+        ("mutserve2_status", "mutserve2 status"), ("mutserve2_depth", "mutserve2 depth"),
+        ("mutserve2_vaf", "mutserve2 VAF"),
+    ]
+    numt_rows = [row for row in variants if row.get("numt_evidence_status") != "NOT_EVALUATED"]
+    numt_columns = [
+        ("position", "Position"), ("ref", "REF"), ("alt", "ALT"), ("caller", "Caller"),
+        ("numt_evidence_status", "NUMT-risk evidence"), ("vaf", "VAF"),
+    ]
+
+    css = """
+:root{--ink:#263238;--muted:#607d8b;--line:#d7e0e5;--paper:#fff;--blue:#3569a8;--orange:#d4772a;--soft:#f4f7f9;--warn:#9a4b32;--ok:#2f6f5e}
+*{box-sizing:border-box}body{margin:0;background:#edf2f4;color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1180px;margin:24px auto;background:var(--paper);box-shadow:0 4px 24px #2632381c;padding:36px 44px}
+header{display:flex;align-items:center;gap:18px;border-bottom:3px solid var(--blue);padding-bottom:18px;margin-bottom:24px}.brand-icon{display:block;width:68px;height:68px;flex:0 0 68px}.brand-name{color:var(--blue);font-size:14px;font-weight:700;letter-spacing:.1em;margin:0 0 2px;text-transform:uppercase}h1{font-size:30px;line-height:1.15;margin:0 0 5px}.sample-line{font-weight:600;margin:0 0 2px}.subtitle{color:var(--muted);margin:0}h2{font-size:21px;margin:34px 0 14px;border-bottom:1px solid var(--line);padding-bottom:7px}h3{font-size:16px;margin:0 0 8px}.status{padding:12px 15px;border-left:5px solid;margin:18px 0;border-radius:3px}.status-ok{background:#edf7f3;border-color:var(--ok)}.status-warning{background:#fff2e8;border-color:var(--warn)}
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:10px}.metric{background:var(--soft);border:1px solid var(--line);border-radius:5px;padding:12px}.metric-label{display:block;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}.metric strong{font-size:21px;display:inline-block;margin-top:3px}.metric small{margin-left:3px;color:var(--muted)}
+.plot-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:18px}.plot{margin:0;border:1px solid var(--line);border-radius:5px;padding:12px;background:#fff}.plot img{display:block;width:100%;height:auto}.plot-wide{max-width:900px;margin:auto}.table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:4px;margin:10px 0 18px}table{border-collapse:collapse;width:100%;font-size:13px}th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}thead th{background:#eaf0f4;cursor:pointer;position:sticky;top:0}.key-value th{width:35%;background:#f4f7f9}.data-table tbody tr:nth-child(even){background:#fafcfd}.filter{display:block;margin:6px 0;color:var(--muted)}.filter input{margin-left:8px;padding:7px 9px;border:1px solid #b0bec5;border-radius:4px;min-width:260px}.empty{color:var(--muted);font-style:italic}.note{background:#f5f7f8;border-left:4px solid #90a4ae;padding:10px 13px}.two-col{display:grid;grid-template-columns:1fr 1fr;gap:18px}footer{margin-top:38px;border-top:1px solid var(--line);padding-top:14px;color:var(--muted);font-size:12px}
+@media(max-width:760px){main{margin:0;padding:22px 16px}header{align-items:flex-start;gap:12px}.brand-icon{width:52px;height:52px;flex-basis:52px}h1{font-size:24px}.plot-grid,.two-col{grid-template-columns:1fr}.plot-grid{display:block}.plot{margin-bottom:14px}}
+@media print{body{background:#fff}main{box-shadow:none;margin:0;max-width:none;padding:20px}.brand-icon{width:54px;height:54px;flex-basis:54px}.filter{display:none}.plot{break-inside:avoid}h2{break-after:avoid}}
+"""
+    javascript = """
+document.querySelectorAll('[data-table]').forEach(input=>input.addEventListener('input',()=>{const q=input.value.toLowerCase();document.querySelectorAll('#'+input.dataset.table+' tbody tr').forEach(row=>row.hidden=!row.textContent.toLowerCase().includes(q));}));
+document.querySelectorAll('th[data-sort]').forEach(th=>th.addEventListener('click',()=>{const table=th.closest('table'),body=table.tBodies[0],index=Number(th.dataset.sort),direction=th.dataset.direction==='asc'?'desc':'asc';th.dataset.direction=direction;const rows=[...body.rows];rows.sort((a,b)=>{let x=a.cells[index].textContent.trim(),y=b.cells[index].textContent.trim(),nx=Number(x),ny=Number(y);if(x!==''&&y!==''&&!Number.isNaN(nx)&&!Number.isNaN(ny)){x=nx;y=ny}return(x<y?-1:x>y?1:0)*(direction==='asc'?1:-1)});rows.forEach(row=>body.appendChild(row));}));
+"""
+
+    report = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MitoArc — {esc(args.sample)} mitochondrial DNA analysis report</title><style>{css}</style></head><body><main>
+<header><img class="brand-icon" src="{brand_icon}" alt="MitoArc icon"><div><p class="brand-name">MitoArc</p><h1>Mitochondrial DNA Analysis Report</h1><p class="sample-line">Sample {esc(args.sample)}</p><p class="subtitle">A reproducible short-read workflow for human mitochondrial genome analysis.</p></div></header>
+<section><h2>1. Sample overview</h2><div class="status {status_class}">{esc(status_text)}</div><div class="metrics">{overview_metrics}</div>
+{key_value_table([('Sample',args.sample),('Input type',summary.get('input_type', 'FASTQ')),('Alignment context',summary.get('alignment_context', 'NA')),('Index status',summary.get('index_status', 'NA')),('NUMT capability',summary.get('numt_evaluation_capability', 'NA')),('Autosomal depth capability',summary.get('autosomal_depth_capability', 'NA')),('FASTQ QC',summary.get('fastq_qc_status', 'AVAILABLE')),('Reference',summary['reference']),('mtDNA contig',summary['mt_contig']),('Reference accession',summary['reference_accession']),('Caller relationship',summary['haplogroup_relationship'])])}</section>
+<section><h2>2. mtDNA QC</h2>{key_value_table([('Mean depth',summary['mean_mt_depth']),('Median depth',summary['median_mt_depth']),('Minimum depth',summary['min_mt_depth']),('Maximum depth',summary['max_mt_depth']),('Bases ≥1× (%)',summary['pct_mt_ge_1x']),('Bases ≥10× (%)',summary['pct_mt_ge_10x']),('Bases ≥100× (%)',summary['pct_mt_ge_100x']),('Bases ≥500× (%)',summary['pct_mt_ge_500x']),('Bases ≥1000× (%)',summary['pct_mt_ge_1000x']),('Mean autosomal depth',summary['mean_autosomal_depth']),('Median autosomal depth',summary['median_autosomal_depth']),('Copy-number proxy',summary['mtdna_copy_number_proxy']),('Copy-number status',summary['copy_number_proxy_status'])])}</section>
+<section><h2>3. Circular mitochondrial genome view</h2><figure class="plot plot-wide"><img src="{image_data(args.mitoplot)}" alt="Circular mitochondrial genome view"></figure></section>
+<section><h2>4. Coverage</h2><div class="plot-grid">{plot_panel('Linear depth profile',args.depth_plot,'Mitochondrial depth by position')}{plot_panel('Coverage thresholds',args.threshold_plot,'Percentage of bases meeting depth thresholds')}</div></section>
+<section><h2>5. Variant landscape</h2>{plot_panel('Caller-specific VAF landscape',args.vaf_plot,'Variant allele fraction by mitochondrial position')}</section>
+<section><h2>6. Caller comparison</h2><p class="note">Callers are shown independently. No preferred caller or fused callset is assigned.</p><div class="plot-grid">{plot_panel('Callset overlap',args.caller_plot,'Shared and caller-only variant counts')}</div>{data_table(comparison,comparison_columns,'caller-comparison','Caller comparison unavailable.')}</section>
+<section><h2>7. NUMT evidence</h2><p>Evaluation status: <strong>{esc(summary['numt_evaluation_status'])}</strong>. Retained caller rows: {esc(summary['numt_retained_caller_rows'])}; caller rows with NUMT-risk evidence: {esc(summary['numt_flagged_caller_rows'])}; unresolved: {esc(summary['numt_unresolved_caller_rows'])}. A flag indicates NUMT-associated mapping evidence and does not establish that a call is false.</p>{data_table(numt_rows,numt_columns,'numt-table','NUMT comparison was not evaluated or produced no evidence rows.')}</section>
+<section><h2>8. Haplogroup</h2>{key_value_table([('GATK haplogroup',summary['gatk_haplogroup']),('GATK quality',summary['gatk_haplogroup_quality']),('GATK status',summary['gatk_haplogroup_status']),('mutserve2 haplogroup',summary['mutserve2_haplogroup']),('mutserve2 quality',summary['mutserve2_haplogroup_quality']),('mutserve2 status',summary['mutserve2_haplogroup_status']),('Relationship',summary['haplogroup_relationship'])])}</section>
+<section><h2>9. Contamination</h2>{key_value_table([('GATK estimate',summary['gatk_contamination']),('GATK status',summary['gatk_contamination_status']),('mutserve2 estimate',summary['mutserve2_contamination']),('mutserve2 status',summary['mutserve2_contamination_status'])])}</section>
+<section><h2>10. Functional annotation</h2>{plot_panel('Supported consequence categories',args.consequence_plot,'Caller-specific functional consequence counts')}{key_value_table([('GATK annotation status',summary['gatk_annotation_status']),('mutserve2 annotation status',summary['mutserve2_annotation_status']),('Annotation resource',summary['annotation_resource'])])}</section>
+<section><h2>11. Variant table</h2><p>Each caller row remains independently inspectable, including at shared sites.</p>{data_table(variants,variant_columns,'variant-table','No variant rows available.',True)}</section>
+<section><h2>12. Consensus information</h2>{key_value_table([('GATK FASTA',summary['gatk_consensus_filename']),('GATK validation',summary['gatk_consensus_validation_status']),('GATK heteroplasmy mode',summary['gatk_consensus_heteroplasmy_mode']),('GATK near-homoplasmic edits',summary['gatk_consensus_near_homoplasmic_edits']),('GATK IUPAC sites',summary['gatk_consensus_iupac_sites']),('GATK indel length delta',summary['gatk_consensus_indel_length_delta']),('mutserve2 FASTA',summary['mutserve2_consensus_filename']),('mutserve2 validation',summary['mutserve2_consensus_validation_status']),('mutserve2 heteroplasmy mode',summary['mutserve2_consensus_heteroplasmy_mode']),('mutserve2 near-homoplasmic edits',summary['mutserve2_consensus_near_homoplasmic_edits']),('mutserve2 IUPAC sites',summary['mutserve2_consensus_iupac_sites']),('mutserve2 indel length delta',summary['mutserve2_consensus_indel_length_delta']),('Additional consensus caller(s)',summary['additional_consensus_callers']),('Additional validation status',summary['additional_consensus_validation_statuses']),('Additional heteroplasmy mode',summary['additional_consensus_heteroplasmy_modes']),('Additional near-homoplasmic edits',summary['additional_consensus_near_homoplasmic_edits'])])}</section>
+<section><h2>13. Technical QC</h2><p>Standard FastQC, fastp, and samtools summaries are collected in <code>multiqc_report.html</code>. Machine-readable mtDNA metrics remain available separately. For pre-aligned BAM/CRAM input, FASTQ preprocessing is reported as not applicable.</p>{key_value_table([('Coverage MAPQ',summary['coverage_mapq']),('Homoplasmy threshold',summary['homoplasmy_threshold']),('mutserve2 calling threshold',summary['mutserve2_heteroplasmy_threshold']),('NUMT mode',summary['numt_mode'])])}</section>
+<section><h2>14. Pipeline and reproducibility</h2>{key_value_table([('Pipeline version',summary['pipeline_version']),('Nextflow version',summary['nextflow_version']),('GATK',summary['gatk_version']),('mutserve2',summary['mutserve2_version']),('HaploGrep',summary['haplogrep_version']),('Haplocheck',summary['haplocheck_version']),('MultiQC',summary['multiqc_version']),('Matplotlib',summary['matplotlib_version']),('Reporting contract',summary['reporting_contract_version']),('Reference compatibility',summary['reference_compatibility'])])}</section>
+<footer>Generated by MitoArc reporting {VERSION}. Research use; no clinical interpretation or caller selection is performed.</footer>
+</main><script>{javascript}</script></body></html>"""
+    Path(args.output).write_text(report, encoding="utf-8")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,251 @@
+#!/usr/bin/env python3
+"""Lightweight caller-preserving annotation against pinned NC_012920.1."""
+
+import argparse
+import csv
+import gzip
+import hashlib
+
+VERSION = "1.0.1"
+RESOURCE = "NC_012920.1_RefSeq_features_2023-04-03"
+COMP = str.maketrans("ACGTN", "TGCAN")
+AA3 = {
+    "A": "Ala", "C": "Cys", "D": "Asp", "E": "Glu", "F": "Phe",
+    "G": "Gly", "H": "His", "I": "Ile", "K": "Lys", "L": "Leu",
+    "M": "Met", "N": "Asn", "P": "Pro", "Q": "Gln", "R": "Arg",
+    "S": "Ser", "T": "Thr", "V": "Val", "W": "Trp", "Y": "Tyr",
+    "*": "Ter", "X": "Xaa",
+}
+
+# NCBI translation table 2, ordered T/C/A/G at each codon position.
+BASE1 = "TTTTTTTTTTTTTTTTCCCCCCCCCCCCCCCCAAAAAAAAAAAAAAAAGGGGGGGGGGGGGGGG"
+BASE2 = "TTTTCCCCAAAAGGGGTTTTCCCCAAAAGGGGTTTTCCCCAAAAGGGGTTTTCCCCAAAAGGGG"
+BASE3 = "TCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAG"
+AAS = "FFLLSSSSYY**CCWWLLLLPPPPHHQQRRRRIIMMTTTTNNKKSS**VVVVAAAADDEEGGGG"
+CODE = {a + b + c: aa for a, b, c, aa in zip(BASE1, BASE2, BASE3, AAS)}
+STARTS = {"ATT", "ATC", "ATA", "ATG", "GTG"}
+
+
+def open_text(path):
+    return gzip.open(path, "rt") if str(path).endswith(".gz") else open(path, "rt")
+
+
+def read_fasta(path):
+    header = None
+    parts = []
+    with open(path) as handle:
+        for line in handle:
+            if line.startswith(">"):
+                if header is None:
+                    header = line[1:].strip()
+            else:
+                parts.append(line.strip())
+    return header or "NA", "".join(parts).upper()
+
+
+def split_values(value):
+    return [] if value in {None, "", "."} else value.split(",")
+
+
+def value_for_alt(value, alt_index):
+    values = split_values(value)
+    if not values:
+        return None
+    return values[alt_index] if alt_index < len(values) else values[0]
+
+
+def parse_numt(path):
+    status = {}
+    with open(path, newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        fields = reader.fieldnames or []
+        evaluated = False
+        for row in reader:
+            evaluated = True
+            key = (row.get("sample"), row.get("caller"), row.get("contig"),
+                   row.get("position") or row.get("pos"), row.get("ref"), row.get("alt"))
+            status[key] = row.get("strategy_c_status") or "NO_MATCHING_EVIDENCE"
+    return evaluated, status
+
+
+def consequence_for_feature(feature, pos, ref, alt, reference):
+    feature_type = feature["feature_type"]
+    if feature_type == "rRNA":
+        return "rRNA_variant", "NA", "rrna"
+    if feature_type == "tRNA":
+        return "tRNA_variant", "NA", "trna"
+    if feature_type == "control_region":
+        return "control_region_variant", "NA", "control_region"
+    if feature_type != "CDS":
+        return "feature_variant", "NA", "other"
+
+    if len(ref) != len(alt):
+        delta = len(alt) - len(ref)
+        consequence = "frameshift_variant" if delta % 3 else (
+            "inframe_insertion" if delta > 0 else "inframe_deletion")
+        return consequence, "NA", "coding"
+    if len(ref) != 1 or len(alt) != 1:
+        return "coding_sequence_variant", "NA", "coding"
+
+    start, end, strand = int(feature["start"]), int(feature["end"]), feature["strand"]
+    cds = reference[start - 1:end]
+    if strand == "-":
+        cds = cds.translate(COMP)[::-1]
+        offset = end - pos
+        alt_coding = alt.translate(COMP)
+    else:
+        offset = pos - start
+        alt_coding = alt
+    codon_start = (offset // 3) * 3
+    if codon_start + 3 > len(cds):
+        return "coding_sequence_variant", "NA", "coding"
+    old_codon = cds[codon_start:codon_start + 3]
+    new_codon = list(old_codon)
+    new_codon[offset % 3] = alt_coding
+    new_codon = "".join(new_codon)
+    aa_index = codon_start // 3
+    old_aa = "M" if aa_index == 0 and old_codon in STARTS else CODE.get(old_codon, "X")
+    new_aa = "M" if aa_index == 0 and new_codon in STARTS else CODE.get(new_codon, "X")
+    protein = f"p.{AA3[old_aa]}{aa_index + 1}{'=' if old_aa == new_aa else AA3[new_aa]}"
+    if old_aa == new_aa:
+        consequence = "synonymous_variant"
+    elif new_aa == "*":
+        consequence = "stop_gained"
+    elif old_aa == "*":
+        consequence = "stop_lost"
+    elif aa_index == 0 and old_aa == "M" and new_aa != "M":
+        consequence = "start_lost"
+    else:
+        consequence = "missense_variant"
+    return consequence, protein, "coding"
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sample", required=True)
+    parser.add_argument("--caller", required=True)
+    parser.add_argument("--vcf", required=True)
+    parser.add_argument("--reference", required=True)
+    parser.add_argument("--canonical-reference", required=True)
+    parser.add_argument("--features", required=True)
+    parser.add_argument("--numt-evidence", required=True)
+    parser.add_argument("--homoplasmy-threshold", required=True, type=float)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--summary", required=True)
+    parser.add_argument("--metadata", required=True)
+    args = parser.parse_args()
+
+    _, reference = read_fasta(args.reference)
+    _, canonical = read_fasta(args.canonical_reference)
+    compatible = reference == canonical and len(reference) == 16569
+    reference_sha = hashlib.sha256(reference.encode()).hexdigest()
+    canonical_sha = hashlib.sha256(canonical.encode()).hexdigest()
+
+    with open(args.features, newline="") as handle:
+        features = list(csv.DictReader(handle, delimiter="\t"))
+    numt_evaluated, numt = parse_numt(args.numt_evidence)
+
+    columns = [
+        "sample", "caller", "contig", "position", "ref", "alt", "gene",
+        "feature_type", "region_type", "consequence", "protein_change", "depth",
+        "vaf", "depth_source", "vaf_source", "variant_state", "homoplasmy_threshold",
+        "numt_evidence_status", "filter_status", "annotation_status", "annotation_resource",
+    ]
+    rows = []
+    with open_text(args.vcf) as handle:
+        for line in handle:
+            if not line.strip() or line.startswith("#"):
+                continue
+            fields = line.rstrip("\n").split("\t")
+            chrom, pos_text, _, ref, alt_text, _, filt, info_text = fields[:8]
+            pos = int(pos_text)
+            format_keys = fields[8].split(":") if len(fields) > 8 else []
+            sample_values = fields[9].split(":") if len(fields) > 9 else []
+            fmt = dict(zip(format_keys, sample_values))
+            info = dict(x.split("=", 1) for x in info_text.split(";") if "=" in x)
+            alts = alt_text.split(",")
+            for alt_index, alt in enumerate(alts):
+                depth_value = fmt.get("DP") or info.get("DP")
+                depth_source = "FORMAT/DP" if fmt.get("DP") else ("INFO/DP" if info.get("DP") else "NA")
+                af_value = value_for_alt(fmt.get("AF"), alt_index)
+                vaf_source = "FORMAT/AF" if af_value is not None else "NA"
+                if af_value is None and fmt.get("AD"):
+                    ad = [int(x) for x in fmt["AD"].split(",") if x not in {"", "."}]
+                    if len(ad) > alt_index + 1 and sum(ad) > 0:
+                        af_value = str(ad[alt_index + 1] / sum(ad))
+                        vaf_source = "FORMAT/AD_pipeline_derived"
+                try:
+                    vaf = float(af_value) if af_value is not None else None
+                except ValueError:
+                    vaf = None
+                state = "UNKNOWN" if vaf is None else (
+                    "NEAR_HOMOPLASMIC" if vaf >= args.homoplasmy_threshold else "HETEROPLASMIC")
+
+                overlapping = [f for f in features if int(f["start"]) <= pos <= int(f["end"])] if compatible else []
+                if not overlapping:
+                    annotations = [("NA", "NA", "intergenic", "intergenic_variant", "NA")] if compatible else [("NA", "NA", "NA", "NA", "NA")]
+                else:
+                    annotations = []
+                    for feature in overlapping:
+                        consequence, protein, region = consequence_for_feature(feature, pos, ref, alt, reference)
+                        annotations.append((feature["gene"], feature["feature_type"], region, consequence, protein))
+                genes = "&".join(dict.fromkeys(x[0] for x in annotations))
+                feature_types = "&".join(dict.fromkeys(x[1] for x in annotations))
+                regions = "&".join(dict.fromkeys(x[2] for x in annotations))
+                consequences = "&".join(dict.fromkeys(x[3] for x in annotations))
+                proteins = "&".join(dict.fromkeys(x[4] for x in annotations))
+                key = (args.sample, args.caller, chrom, pos_text, ref, alt)
+                numt_status = numt.get(key, "NO_MATCHING_EVIDENCE") if numt_evaluated else "NOT_EVALUATED"
+                rows.append({
+                    "sample": args.sample, "caller": args.caller, "contig": chrom,
+                    "position": pos_text, "ref": ref, "alt": alt, "gene": genes,
+                    "feature_type": feature_types, "region_type": regions,
+                    "consequence": consequences, "protein_change": proteins,
+                    "depth": depth_value or "NA", "vaf": af_value or "NA",
+                    "depth_source": depth_source, "vaf_source": vaf_source,
+                    "variant_state": state, "homoplasmy_threshold": f"{args.homoplasmy_threshold:g}",
+                    "numt_evidence_status": numt_status, "filter_status": filt,
+                    "annotation_status": "AVAILABLE" if compatible else "UNAVAILABLE",
+                    "annotation_resource": RESOURCE,
+                })
+
+    with open(args.output, "w", newline="") as out:
+        writer = csv.DictWriter(out, columns, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+
+    def count_where(predicate):
+        return sum(1 for row in rows if predicate(row))
+    summary_columns = ["sample", "caller", "total_variants", "heteroplasmic", "near_homoplasmic",
+                       "coding", "missense", "synonymous", "rrna", "trna", "control_region",
+                       "other", "annotation_status", "homoplasmy_threshold", "annotation_resource"]
+    summary = {
+        "sample": args.sample, "caller": args.caller, "total_variants": len(rows),
+        "heteroplasmic": count_where(lambda r: r["variant_state"] == "HETEROPLASMIC"),
+        "near_homoplasmic": count_where(lambda r: r["variant_state"] == "NEAR_HOMOPLASMIC"),
+        "coding": count_where(lambda r: "coding" in r["region_type"].split("&")),
+        "missense": count_where(lambda r: "missense_variant" in r["consequence"].split("&")),
+        "synonymous": count_where(lambda r: "synonymous_variant" in r["consequence"].split("&")),
+        "rrna": count_where(lambda r: "rrna" in r["region_type"].split("&")),
+        "trna": count_where(lambda r: "trna" in r["region_type"].split("&")),
+        "control_region": count_where(lambda r: "control_region" in r["region_type"].split("&")),
+        "other": count_where(lambda r: r["region_type"] in {"other", "intergenic"}),
+        "annotation_status": "AVAILABLE" if compatible else "UNAVAILABLE",
+        "homoplasmy_threshold": f"{args.homoplasmy_threshold:g}", "annotation_resource": RESOURCE,
+    }
+    with open(args.summary, "w", newline="") as out:
+        writer = csv.DictWriter(out, summary_columns, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        writer.writerow(summary)
+
+    with open(args.metadata, "w", newline="") as out:
+        writer = csv.writer(out, delimiter="\t", lineterminator="\n")
+        writer.writerow(["sample", "caller", "annotator", "annotator_version", "resource",
+                         "reference_length", "reference_sha256", "canonical_sha256", "compatibility"])
+        writer.writerow([args.sample, args.caller, "mtdna_pipeline_refseq_annotator", VERSION, RESOURCE,
+                         len(reference), reference_sha, canonical_sha,
+                         "COMPATIBLE" if compatible else "INCOMPATIBLE"])
+
+
+if __name__ == "__main__":
+    main()

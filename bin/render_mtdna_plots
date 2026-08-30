@@ -1,0 +1,357 @@
+#!/usr/bin/env python3
+"""Render deterministic publication-oriented mtDNA plots from reporting contracts."""
+
+import argparse
+import csv
+import math
+import re
+from collections import Counter, defaultdict
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+
+VERSION = "1.0.1"
+NA = "NA"
+CALLER_COLORS = {"gatk": "#3569A8", "mutserve2": "#D4772A", "functional_fixture": "#6F5AA8"}
+FEATURE_COLORS = {"CDS": "#4C78A8", "rRNA": "#59A14F", "tRNA": "#9C755F",
+                  "control_region": "#D9A441"}
+TEXT = "#263238"
+GRID = "#D6DEE3"
+
+
+def read_rows(path):
+    with open(path, newline="") as handle:
+        return list(csv.DictReader(handle, delimiter="\t"))
+
+
+def numeric(value, default=np.nan):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def setup_style():
+    matplotlib.rcParams.update({
+        "font.family": "DejaVu Sans", "font.size": 9, "axes.titlesize": 12,
+        "axes.labelsize": 10, "axes.edgecolor": "#90A4AE", "axes.labelcolor": TEXT,
+        "xtick.color": TEXT, "ytick.color": TEXT, "text.color": TEXT,
+        "axes.grid": True, "grid.color": GRID, "grid.linewidth": 0.6,
+        "grid.alpha": 0.75, "figure.facecolor": "white", "axes.facecolor": "white",
+        "savefig.facecolor": "white", "svg.hashsalt": "mitoarc-reporting-1.0.0",
+    })
+
+
+def save_pair(fig, prefix):
+    svg_path = prefix + ".svg"
+    fig.savefig(svg_path, bbox_inches="tight", metadata={"Date": None})
+    svg = Path(svg_path).read_text(encoding="utf-8")
+    Path(svg_path).write_text(re.sub(r"\s*<metadata>.*?</metadata>", "", svg, count=1,
+                                     flags=re.DOTALL), encoding="utf-8")
+    fig.savefig(prefix + ".png", dpi=180, bbox_inches="tight",
+                metadata={"Software": f"MitoArc reporting {VERSION}"})
+    plt.close(fig)
+
+
+def unavailable_panel(title, message, size=(8.0, 4.5)):
+    fig, ax = plt.subplots(figsize=size)
+    ax.axis("off")
+    ax.text(0.5, 0.62, title, ha="center", va="center", fontsize=14, weight="bold", color=TEXT)
+    ax.text(0.5, 0.43, message, ha="center", va="center", fontsize=10, color="#546E7A",
+            wrap=True, transform=ax.transAxes)
+    return fig
+
+
+def coverage_by_position(plot_rows):
+    coverage = {}
+    for row in plot_rows:
+        coverage.setdefault(int(row["position"]), numeric(row["coverage"], 0.0))
+    positions = sorted(coverage)
+    return np.array(positions), np.array([coverage[pos] for pos in positions])
+
+
+def plot_depth(sample, plot_rows, compatible):
+    positions, coverage = coverage_by_position(plot_rows)
+    fig, ax = plt.subplots(figsize=(9.0, 4.0))
+    ax.plot(positions, coverage, color="#3569A8", linewidth=0.85)
+    ax.fill_between(positions, coverage, color="#8FB3D9", alpha=0.25, linewidth=0)
+    ax.set(xlabel="Mitochondrial position (bp)", ylabel="Depth")
+    ax.set_xlim(1, max(positions) if len(positions) else 1)
+    ax.set_ylim(bottom=0)
+    if compatible:
+        ax.axvline(1, color="#A45A52", linestyle="--", linewidth=1.0, alpha=0.8,
+                   label="Reference breakpoint")
+        handles, labels = ax.get_legend_handles_labels()
+        fig.legend(handles, labels, frameon=False, loc="upper right",
+                   bbox_to_anchor=(0.985, 0.90))
+    else:
+        fig.text(0.09, 0.86, "Technical reference; not canonical human mtDNA",
+                 va="center", fontsize=8.5, color="#A04A42",
+                 bbox={"facecolor": "#FFF3E8", "edgecolor": "#E7B28A", "pad": 4})
+    fig.suptitle(f"{sample} — mitochondrial coverage profile", y=0.965, fontsize=12)
+    fig.subplots_adjust(left=0.09, right=0.985, bottom=0.15, top=0.74)
+    return fig
+
+
+def plot_thresholds(sample, summary):
+    labels = ["≥1×", "≥10×", "≥100×", "≥500×", "≥1000×"]
+    keys = ["pct_mt_ge_1x", "pct_mt_ge_10x", "pct_mt_ge_100x", "pct_mt_ge_500x",
+            "pct_mt_ge_1000x"]
+    values = [numeric(summary.get(key), 0.0) for key in keys]
+    fig, ax = plt.subplots(figsize=(6.8, 4.0))
+    bars = ax.bar(labels, values, color="#4C78A8", width=0.66)
+    ax.set(ylabel="Mitochondrial bases (%)", ylim=(0, 105),
+           title=f"{sample} — coverage completeness")
+    for bar, result in zip(bars, values):
+        ax.text(bar.get_x() + bar.get_width() / 2, min(result + 2, 101), f"{result:.1f}%",
+                ha="center", va="bottom", fontsize=8)
+    ax.grid(axis="x", visible=False)
+    fig.tight_layout()
+    return fig
+
+
+def variant_rows(plot_rows):
+    return [row for row in plot_rows if row.get("caller") not in {NA, "", None}]
+
+
+def plot_vaf(sample, plot_rows, genome_length, homoplasmy_threshold, compatible):
+    variants = variant_rows(plot_rows)
+    if not variants:
+        return unavailable_panel(f"{sample} — variant VAF landscape", "No caller variant rows available.")
+    fig, ax = plt.subplots(figsize=(9.0, 4.8))
+    markers = {"HETEROPLASMIC": "o", "NEAR_HOMOPLASMIC": "^", "UNKNOWN": "s"}
+    callers = list(dict.fromkeys(row["caller"] for row in variants))
+    for caller in callers:
+        for state, marker in markers.items():
+            selected = [row for row in variants if row["caller"] == caller and row["variant_state"] == state]
+            if not selected:
+                continue
+            x = [int(row["position"]) for row in selected]
+            y = [numeric(row["vaf"]) for row in selected]
+            flagged = ["FLAG" in row.get("numt_evidence_status", "") for row in selected]
+            ax.scatter(x, y, marker=marker, s=48, color=CALLER_COLORS.get(caller, "#607D8B"),
+                       edgecolors=["#A23B3B" if flag else "white" for flag in flagged],
+                       linewidths=[1.8 if flag else 0.7 for flag in flagged], alpha=0.9,
+                       label=f"{caller} · {state.lower().replace('_', ' ')}")
+    position_label = ("Canonical mitochondrial position (bp)" if compatible else
+                      "Technical mitochondrial reference position (bp)")
+    title_suffix = "" if compatible else " — technical reference"
+    ax.set(xlabel=position_label, ylabel="Variant allele fraction",
+           xlim=(1, genome_length), ylim=(-0.03, 1.04))
+    ax.axhline(homoplasmy_threshold, color="#546E7A",
+               linestyle="--", linewidth=0.9, label="Near-homoplasmy threshold")
+    handles, labels = ax.get_legend_handles_labels()
+    fig.suptitle(f"{sample} — caller-specific VAF landscape{title_suffix}",
+                 y=0.965, fontsize=12)
+    fig.legend(handles, labels, frameon=False, fontsize=7.5, ncol=3,
+               loc="upper center", bbox_to_anchor=(0.5, 0.895))
+    fig.subplots_adjust(left=0.09, right=0.985, bottom=0.14, top=0.70)
+    return fig
+
+
+def plot_consequences(sample, variants, compatible):
+    categories = [("missense", "missense_variant"), ("synonymous", "synonymous_variant"),
+                  ("rRNA", "rRNA_variant"), ("tRNA", "tRNA_variant"),
+                  ("control region", "control_region_variant"), ("other", None)]
+    if not compatible:
+        return unavailable_panel(f"{sample} — functional consequence summary",
+                                 "Unavailable: reference is not compatible with canonical human mtDNA.")
+    callers = list(dict.fromkeys(row["caller"] for row in variants))
+    counts = defaultdict(list)
+    known = {term for _, term in categories if term}
+    for caller in callers:
+        caller_rows = [row for row in variants if row["caller"] == caller]
+        for _, term in categories:
+            if term:
+                counts[caller].append(sum(term in row.get("consequence", "").split("&") for row in caller_rows))
+            else:
+                counts[caller].append(sum(not any(term in row.get("consequence", "").split("&") for term in known)
+                                          for row in caller_rows))
+    fig, ax = plt.subplots(figsize=(7.8, 4.6))
+    x = np.arange(len(categories))
+    width = 0.72 / max(len(callers), 1)
+    for index, caller in enumerate(callers):
+        offset = (index - (len(callers) - 1) / 2) * width
+        ax.bar(x + offset, counts[caller], width=width, label=caller,
+               color=CALLER_COLORS.get(caller, "#607D8B"))
+    ax.set_xticks(x, [label for label, _ in categories], rotation=18, ha="right")
+    ax.set(ylabel="Caller variant rows")
+    ax.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True))
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, labels, frameon=False, ncol=min(len(handles), 3),
+                   loc="upper center", bbox_to_anchor=(0.5, 0.90))
+    ax.grid(axis="x", visible=False)
+    fig.suptitle(f"{sample} — supported consequence categories", y=0.965, fontsize=12)
+    fig.subplots_adjust(left=0.10, right=0.985, bottom=0.20, top=0.74)
+    return fig
+
+
+def plot_caller_comparison(sample, comparison):
+    if not comparison:
+        return unavailable_panel(f"{sample} — caller comparison", "Caller comparison data unavailable.")
+    count = Counter(row["callset_relationship"] for row in comparison)
+    labels = ["Shared", "GATK only", "mutserve2 only"]
+    values = [count.get("shared", 0), count.get("gatk_only", 0), count.get("mutserve2_only", 0)]
+    colors = ["#5B8E7D", CALLER_COLORS["gatk"], CALLER_COLORS["mutserve2"]]
+    fig, ax = plt.subplots(figsize=(6.5, 3.9))
+    bars = ax.bar(labels, values, color=colors, width=0.62)
+    for bar, result in zip(bars, values):
+        ax.text(bar.get_x() + bar.get_width() / 2, result + 0.08, str(result), ha="center", va="bottom")
+    ax.set(ylabel="Distinct variant sites", title=f"{sample} — caller comparison")
+    ax.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True))
+    ax.grid(axis="x", visible=False)
+    fig.tight_layout()
+    return fig
+
+
+def polar_angle(position, genome_length):
+    return 2 * math.pi * (position - 1) / genome_length
+
+
+def plot_mitoplot(sample, plot_rows, features, compatible, genome_length):
+    if not compatible:
+        return unavailable_panel(f"{sample} — circular mitochondrial genome view",
+                                 "Biological circular annotation unavailable: the technical reference is not "
+                                 "sequence-compatible with canonical 16,569 bp human mtDNA.", size=(8.2, 8.2))
+    positions, coverage = coverage_by_position(plot_rows)
+    variants = variant_rows(plot_rows)
+    fig = plt.figure(figsize=(10.5, 10.5))
+    ax = fig.add_subplot(111, projection="polar")
+    ax.set_theta_zero_location("N")
+    ax.set_theta_direction(-1)
+    ax.set_ylim(0, 1.65)
+    ax.grid(False)
+    ax.set_yticklabels([])
+    ax.spines["polar"].set_visible(False)
+
+    ax.plot(np.linspace(0, 2 * math.pi, 720), np.full(720, 1.0), color="#455A64", linewidth=1.2)
+    for feature in features:
+        start, end = int(feature["start"]), int(feature["end"])
+        theta = polar_angle(start, genome_length)
+        width = 2 * math.pi * (end - start + 1) / genome_length
+        strand = feature.get("strand", "+")
+        bottom = 1.00 if strand == "+" else 0.88
+        height = 0.10
+        ax.bar(theta, height, width=width, bottom=bottom, align="edge",
+               color=FEATURE_COLORS.get(feature["feature_type"], "#90A4AE"),
+               edgecolor="white", linewidth=0.35, alpha=0.95)
+
+    label_seen = set()
+    for feature in features:
+        gene = feature["gene"]
+        if gene in label_seen:
+            continue
+        label_seen.add(gene)
+        midpoint = (int(feature["start"]) + int(feature["end"])) / 2
+        theta = polar_angle(midpoint, genome_length)
+        radius = 1.18 if feature["feature_type"] != "tRNA" else 1.13
+        rotation = 90 - math.degrees(theta)
+        alignment = "left"
+        if 90 < math.degrees(theta) < 270:
+            rotation += 180
+            alignment = "right"
+        ax.text(theta, radius, gene, rotation=rotation, rotation_mode="anchor", ha=alignment,
+                va="center", fontsize=6.2 if feature["feature_type"] == "tRNA" else 7.2,
+                color=TEXT)
+
+    max_log = np.log1p(coverage).max() if len(coverage) and coverage.max() > 0 else 1.0
+    coverage_radius = 0.42 + 0.34 * np.log1p(coverage) / max_log
+    theta_cov = np.array([polar_angle(pos, genome_length) for pos in positions])
+    ax.plot(theta_cov, coverage_radius, color="#3569A8", linewidth=0.75, alpha=0.9)
+    ax.fill_between(theta_cov, 0.42, coverage_radius, color="#8FB3D9", alpha=0.25)
+
+    caller_radius = {"gatk": 1.34, "mutserve2": 1.46, "functional_fixture": 1.40}
+    for row in variants:
+        caller = row["caller"]
+        theta = polar_angle(int(row["position"]), genome_length)
+        marker = "^" if row.get("variant_state") == "NEAR_HOMOPLASMIC" else "o"
+        flagged = "FLAG" in row.get("numt_evidence_status", "")
+        ax.scatter([theta], [caller_radius.get(caller, 1.40)], s=34, marker=marker,
+                   facecolor=CALLER_COLORS.get(caller, "#607D8B"),
+                   edgecolor="#A23B3B" if flagged else "white", linewidth=1.5 if flagged else 0.6,
+                   zorder=10)
+
+    tick_positions = [1, 4000, 8000, 12000, 16569]
+    for tick in tick_positions:
+        theta = polar_angle(tick, genome_length)
+        ax.plot([theta, theta], [0.78, 0.83], color="#607D8B", linewidth=0.8)
+        ax.text(theta, 0.80, f"{tick:,}", ha="center", va="center", fontsize=7, color="#455A64")
+    ax.plot([0, 0], [0.80, 1.55], color="#A45A52", linestyle="--", linewidth=0.8, alpha=0.8)
+    ax.text(0, 1.60, "1 / 16,569", ha="center", va="center", fontsize=7.5, color="#A04A42")
+    ax.text(0, 0.18, f"{sample}\ncanonical human mtDNA", ha="center", va="center",
+            fontsize=13, weight="bold", color=TEXT)
+    ax.text(0, 0.05, "inner track: log-scaled coverage\nouter tracks: caller variants",
+            ha="center", va="center", fontsize=7.5, color="#607D8B")
+
+    feature_handles = [matplotlib.patches.Patch(color=color, label=kind.replace("_", " "))
+                       for kind, color in FEATURE_COLORS.items()]
+    caller_handles = [matplotlib.lines.Line2D([], [], marker="o", linestyle="None", markersize=6,
+                                             markerfacecolor=color, markeredgecolor="white", label=caller)
+                      for caller, color in CALLER_COLORS.items() if any(v["caller"] == caller for v in variants)]
+    state_handles = [
+        matplotlib.lines.Line2D([], [], marker="o", linestyle="None", color="#607D8B", label="heteroplasmic"),
+        matplotlib.lines.Line2D([], [], marker="^", linestyle="None", color="#607D8B", label="near-homoplasmic"),
+        matplotlib.lines.Line2D([], [], marker="o", linestyle="None", markerfacecolor="white",
+                               markeredgecolor="#A23B3B", label="NUMT-risk evidence"),
+    ]
+    ax.legend(handles=feature_handles + caller_handles + state_handles, frameon=False, fontsize=7,
+              ncol=3, loc="lower center", bbox_to_anchor=(0.5, -0.145))
+    fig.suptitle("Circular mitochondrial genome overview", y=0.98, fontsize=14, weight="bold")
+    fig.subplots_adjust(top=0.92, bottom=0.13)
+    return fig
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sample", required=True)
+    parser.add_argument("--summary", required=True)
+    parser.add_argument("--plot-data", required=True)
+    parser.add_argument("--features", required=True)
+    parser.add_argument("--variants", required=True)
+    parser.add_argument("--comparison", required=True)
+    parser.add_argument("--output-prefix", required=True)
+    args = parser.parse_args()
+    setup_style()
+    summary = read_rows(args.summary)[0]
+    plot_rows = read_rows(args.plot_data)
+    features = read_rows(args.features)
+    variants = read_rows(args.variants)
+    comparison = read_rows(args.comparison)
+    compatible = summary["reference_compatibility"] == "CANONICAL_NC_012920.1"
+    genome_length = max(int(row["position"]) for row in plot_rows) if plot_rows else 1
+
+    save_pair(plot_depth(args.sample, plot_rows, compatible), args.output_prefix + ".mtDNA_depth_profile")
+    save_pair(plot_thresholds(args.sample, summary), args.output_prefix + ".coverage_thresholds")
+    save_pair(plot_vaf(args.sample, plot_rows, genome_length,
+                       numeric(summary.get("homoplasmy_threshold"), 0.95), compatible),
+              args.output_prefix + ".vaf_landscape")
+    save_pair(plot_consequences(args.sample, variants, compatible), args.output_prefix + ".variant_consequences")
+    save_pair(plot_caller_comparison(args.sample, comparison), args.output_prefix + ".caller_comparison")
+    save_pair(plot_mitoplot(args.sample, plot_rows, features, compatible, genome_length),
+              args.output_prefix + ".mitoplot")
+    manifest_columns = ["sample", "plotter", "plotter_version", "renderer_version",
+                        "reference_compatibility",
+                        "genome_length", "mitoplot_status", "variant_rows", "variant_positions",
+                        "callers", "svg_files", "png_files"]
+    manifest = {
+        "sample": args.sample, "plotter": "matplotlib", "plotter_version": matplotlib.__version__,
+        "renderer_version": VERSION,
+        "reference_compatibility": summary["reference_compatibility"], "genome_length": genome_length,
+        "mitoplot_status": "AVAILABLE" if compatible else "UNAVAILABLE_REFERENCE",
+        "variant_rows": len(variants),
+        "variant_positions": ",".join(str(pos) for pos in sorted({int(row["position"]) for row in variants})),
+        "callers": ",".join(sorted({row["caller"] for row in variants})),
+        "svg_files": 6, "png_files": 6,
+    }
+    with open(args.output_prefix + ".plot_manifest.tsv", "w", newline="") as handle:
+        writer = csv.DictWriter(handle, manifest_columns, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        writer.writerow(manifest)
+
+
+if __name__ == "__main__":
+    main()

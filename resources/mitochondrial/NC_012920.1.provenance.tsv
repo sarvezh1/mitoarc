@@ -1,0 +1,5 @@
+resource	accession	version	retrieved_utc	source_url	sha256_original_download	derivation
+reference_fasta	NC_012920.1	1	2026-08-26	https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=NC_012920.1&rettype=fasta&retmode=text	fc392cde8e63b4d2e3a870bb97cc0626dea33d46dfb8abdebffada040f42ec92	verbatim_NCBI_FASTA
+feature_table	NC_012920.1	1	2026-08-26	https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=NC_012920.1&rettype=ft&retmode=text	c6f5b3a057b6194dd3fdcdaa1541216d229f9829cea9f10add706c6aefdd9fc1	primary_CDS_rRNA_tRNA_and_split_D-loop_intervals_compacted_to_TSV
+genetic_code	NCBI_translation_table_2	2	2026-08-26	https://www.ncbi.nlm.nih.gov/datasets/docs/v2/data-processing/taxonomy-processing/genetic-codes/	NA	vertebrate_mitochondrial_translation_table
+

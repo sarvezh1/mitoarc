@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""Validate the canonical annotation and both heteroplasmy consensus modes."""
+
+import argparse
+import csv
+import sys
+
+
+def read_sequence(path):
+    header = ""
+    sequence = []
+    with open(path) as handle:
+        for line in handle:
+            if line.startswith(">"):
+                header = line[1:].strip()
+            else:
+                sequence.append(line.strip())
+    return header, "".join(sequence)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--annotated", required=True)
+    parser.add_argument("--expected", required=True)
+    parser.add_argument("--canonical-reference", required=True)
+    parser.add_argument("--reference-consensus", required=True)
+    parser.add_argument("--iupac-consensus", required=True)
+    parser.add_argument("--reference-validation", required=True)
+    parser.add_argument("--iupac-validation", required=True)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args()
+
+    with open(args.annotated, newline="") as handle:
+        observed = {row["position"]: row for row in csv.DictReader(handle, delimiter="\t")}
+    with open(args.expected, newline="") as handle:
+        expected = list(csv.DictReader(handle, delimiter="\t"))
+    ref_header, ref_seq = read_sequence(args.reference_consensus)
+    iupac_header, iupac_seq = read_sequence(args.iupac_consensus)
+    _, canonical_seq = read_sequence(args.canonical_reference)
+    with open(args.reference_validation, newline="") as handle:
+        ref_validation = next(csv.DictReader(handle, delimiter="\t"))
+    with open(args.iupac_validation, newline="") as handle:
+        iupac_validation = next(csv.DictReader(handle, delimiter="\t"))
+
+    checks = []
+    expected_ref_seq = list(canonical_seq)
+    expected_iupac_seq = list(canonical_seq)
+    fields = ["ref", "alt", "gene", "feature_type", "region_type", "consequence",
+              "protein_change", "variant_state"]
+    for expected_row in expected:
+        pos = expected_row["position"]
+        observed_row = observed.get(pos, {})
+        for field in fields:
+            checks.append((f"annotation_{pos}_{field}", observed_row.get(field, "MISSING"), expected_row[field]))
+        checks.append((f"reference_consensus_{pos}", ref_seq[int(pos) - 1], expected_row["reference_mode_base"]))
+        checks.append((f"iupac_consensus_{pos}", iupac_seq[int(pos) - 1], expected_row["iupac_mode_base"]))
+        expected_ref_seq[int(pos) - 1] = expected_row["reference_mode_base"]
+        expected_iupac_seq[int(pos) - 1] = expected_row["iupac_mode_base"]
+    checks.extend([
+        ("annotation_row_count", str(len(observed)), str(len(expected))),
+        ("annotation_numt_not_evaluated",
+         str(all(row["numt_evidence_status"] == "NOT_EVALUATED" for row in observed.values())), "True"),
+        ("reference_consensus_length", str(len(ref_seq)), "16569"),
+        ("iupac_consensus_length", str(len(iupac_seq)), "16569"),
+        ("reference_consensus_exact_expected", str(ref_seq == "".join(expected_ref_seq)), "True"),
+        ("iupac_consensus_exact_expected", str(iupac_seq == "".join(expected_iupac_seq)), "True"),
+        ("reference_header_identity", str("FUNCTIONAL" in ref_header and "caller=functional_fixture" in ref_header), "True"),
+        ("iupac_header_identity", str("FUNCTIONAL" in iupac_header and "caller=functional_fixture" in iupac_header), "True"),
+        ("reference_validation", ref_validation["validation_status"], "PASS"),
+        ("iupac_validation", iupac_validation["validation_status"], "PASS"),
+        ("reference_shifted_records", ref_validation["shifted_coordinate_records"], "0"),
+        ("iupac_shifted_records", iupac_validation["shifted_coordinate_records"], "0"),
+        ("reference_near_homoplasmic_edits", ref_validation["near_homoplasmic_edits"], "2"),
+        ("reference_heteroplasmic_sites_left_reference",
+         ref_validation["heteroplasmic_sites_left_reference"], "3"),
+        ("iupac_near_homoplasmic_edits", iupac_validation["near_homoplasmic_edits"], "2"),
+        ("iupac_sites", iupac_validation["iupac_sites"], "3"),
+    ])
+
+    with open(args.output, "w", newline="") as out:
+        writer = csv.writer(out, delimiter="\t", lineterminator="\n")
+        writer.writerow(["fixture", "check", "observed", "expected", "status"])
+        for check, value, expectation in checks:
+            writer.writerow(["FUNCTIONAL", check, value, expectation,
+                             "PASS" if value == expectation else "FAIL"])
+    if any(value != expectation for _, value, expectation in checks):
+        sys.exit("Mitochondrial annotation/consensus functional validation failed")
+
+
+if __name__ == "__main__":
+    main()

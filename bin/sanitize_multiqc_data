@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+"""Remove runtime-local paths from portable MultiQC data exports."""
+
+import argparse
+import os
+from pathlib import Path
+
+VERSION = "1.0.0"
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data", required=True)
+    args = parser.parse_args()
+    runtime_directory = str(Path.cwd().resolve())
+    data_directory = Path(args.data)
+    for path in data_directory.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            content = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        sanitized = content.replace(runtime_directory + os.sep, "")
+        sanitized = sanitized.replace(runtime_directory, ".")
+        if sanitized != content:
+            path.write_text(sanitized, encoding="utf-8")
+
+
+if __name__ == "__main__":
+    main()

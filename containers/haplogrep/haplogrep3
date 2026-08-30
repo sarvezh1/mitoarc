@@ -1,0 +1,8 @@
+#!/bin/sh
+if [ ! -e haplogrep3.yaml ]; then
+    ln -s /opt/haplogrep3/haplogrep3.yaml haplogrep3.yaml
+fi
+if [ ! -e trees ]; then
+    ln -s /opt/haplogrep3/trees trees
+fi
+exec java -Xms128m -Xmx1500m -jar /opt/haplogrep3/haplogrep3.jar "$@"

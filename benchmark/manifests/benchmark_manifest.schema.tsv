@@ -1,0 +1,21 @@
+field	required	type	allowed_or_rule	description
+benchmark_id	yes	string	unique; [A-Za-z0-9_.-]+	Stable experiment identifier encoding or referencing depth, VAF, strategy, caller/mode, and replicate
+sample_id	yes	string	non-empty	Pipeline sample identifier
+dataset_type	yes	enum	synthetic|spike_in|downsampled|real_validation	Input provenance class
+reference	yes	path	existing FASTA	Reference passed unchanged to the pipeline
+input_bam_or_fastq	yes	path-list	existing BAM or FASTQ paths separated by semicolon	Input source; BAM or paired FASTQ
+truth_vcf	yes	path	existing canonical truth TSV or VCF	Caller-independent truth source
+depth_target	yes	integer	100|250|500|1000|2000|5000	Requested depth condition
+vaf_target	yes	float	0..1	Requested VAF condition
+vaf_bin	yes	enum	LT_0_01|VAF_0_01_0_02|VAF_0_02_0_05|VAF_0_05_0_10|VAF_0_10_0_50|GT_0_50	Frozen VAF stratum
+variant_class	yes	enum	SNV|indel	Truth variant class
+variant_position	yes	integer-or-NA	positive coordinate or NA	Primary controlled position
+boundary_class	yes	enum	BOUNDARY|NON_BOUNDARY	Circular-boundary classification
+numt_context	yes	enum	NO_NUMT_CHALLENGE|NUMT_LIKE|AMBIGUOUS_CONTEXT	Controlled NUMT context label
+caller	yes	enum	gatk|mutserve2	Caller whose output will be normalized
+numt_strategy	yes	enum	A|B|C	Benchmark NUMT strategy
+circular_mode	yes	enum	standard_only|standard_plus_shifted	Callset representation
+replicate	yes	integer	>=1	Explicit replicate number
+seed	yes	integer	0..2147483647	Deterministic random seed
+numt_truth	yes	path-or-NA	existing frozen NUMT truth TSV or NA	Optional TRUE_MT/NUMT_FALSE/AMBIGUOUS evaluation sidecar
+numt_design	yes	path-or-NA	existing read-design TSV or NA	Optional frozen NUMT preflight design sidecar

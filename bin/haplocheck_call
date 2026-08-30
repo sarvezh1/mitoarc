@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+sample=$1
+caller=$2
+vcf=$3
+native=$4
+standardized=$5
+
+set +e
+haplocheck --raw --out "$native" "$vcf" > haplocheck.stdout 2> haplocheck.stderr
+rc=$?
+set -e
+
+printf 'sample\tcaller\tmethod\testimated_contamination\tstatus\tsupporting_metric\ttool\ttool_version\tinput_source\n' > "$standardized"
+
+raw_base=${native%.*}.raw.txt
+if [ "$rc" -ne 0 ] || [ ! -s "$native" ]; then
+    message=$(tr '\n\t' '  ' < haplocheck.stderr | cut -c1-160)
+    printf '%s\t%s\t%s\tNA\tFAILED_QC\texit_code=%s;message=%s\thaplocheck\t1.3.3\t%s\n' \
+        "$sample" "$caller" 'phylogeny_based_mitochondrial_contamination' "$rc" "$message" "$caller canonical VCF" >> "$standardized"
+    if [ ! -e "$native" ]; then
+        printf 'Sample\tContamination Status\tContamination Level\tDistance\tSample Coverage\n' > "$native"
+    fi
+    if [ ! -e "$raw_base" ]; then
+        printf 'Haplocheck did not produce raw evidence; exit_code=%s\n' "$rc" > "$raw_base"
+    fi
+    exit 0
+fi
+
+parsed=$(awk -F '\t' 'NR==2 {gsub(/"/, ""); print $2 "\t" $3 "\t" $4 "\t" $5}' "$native")
+native_status=$(printf '%s' "$parsed" | cut -f1)
+level=$(printf '%s' "$parsed" | cut -f2)
+distance=$(printf '%s' "$parsed" | cut -f3)
+coverage=$(printf '%s' "$parsed" | cut -f4)
+
+if [ -z "$level" ] || [ "$level" = 'ND' ] || [ "$level" = 'NA' ]; then
+    estimate='NA'
+    status='INSUFFICIENT_DATA'
+else
+    estimate=$level
+    status='AVAILABLE'
+fi
+support="native_status=${native_status:-ND};distance=${distance:-NA};sample_coverage=${coverage:-NA}"
+printf '%s\t%s\t%s\t%s\t%s\t%s\thaplocheck\t1.3.3\t%s\n' \
+    "$sample" "$caller" 'phylogeny_based_mitochondrial_contamination' "$estimate" "$status" "$support" "$caller canonical VCF" >> "$standardized"
+

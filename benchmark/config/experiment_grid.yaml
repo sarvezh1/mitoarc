@@ -1,0 +1,40 @@
+schema_version: 1
+depths: [100, 250, 500, 1000, 2000, 5000]
+vaf_strata:
+  - id: LT_0_01
+    lower: 0.0
+    upper: 0.01
+    lower_inclusive: true
+    upper_inclusive: false
+  - id: VAF_0_01_0_02
+    lower: 0.01
+    upper: 0.02
+    lower_inclusive: true
+    upper_inclusive: false
+  - id: VAF_0_02_0_05
+    lower: 0.02
+    upper: 0.05
+    lower_inclusive: true
+    upper_inclusive: false
+  - id: VAF_0_05_0_10
+    lower: 0.05
+    upper: 0.10
+    lower_inclusive: true
+    upper_inclusive: false
+  - id: VAF_0_10_0_50
+    lower: 0.10
+    upper: 0.50
+    lower_inclusive: true
+    upper_inclusive: true
+  - id: GT_0_50
+    lower: 0.50
+    upper: 1.0
+    lower_inclusive: false
+    upper_inclusive: true
+callers: [gatk, mutserve2]
+numt_strategies: [A, B, C]
+circular_modes: [standard_only, standard_plus_shifted]
+variant_classes: [SNV, indel]
+boundary_classes: [BOUNDARY, NON_BOUNDARY]
+numt_contexts: [NO_NUMT_CHALLENGE, NUMT_LIKE, AMBIGUOUS_CONTEXT]
+full_cartesian_product_enabled: false

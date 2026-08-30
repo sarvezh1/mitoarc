@@ -1,0 +1,3 @@
+truth_id	chrom	pos	ref	alt	variant_class	expected_vaf	boundary_class	numt_context	source	notes
+mini_vaf_020	chrM	370	C	A	SNV	0.20	NON_BOUNDARY	NO_NUMT_CHALLENGE	deterministic_synthetic_fixture	Harness validation only
+mini_vaf_080	chrM	350	T	A	SNV	0.80	NON_BOUNDARY	NO_NUMT_CHALLENGE	deterministic_synthetic_fixture	Harness validation only

@@ -1,0 +1,6 @@
+position	ref	alt	gene	feature_type	region_type	consequence	protein_change	variant_state	reference_mode_base	iupac_mode_base
+73	A	G	DLOOP	control_region	control_region	control_region_variant	NA	NEAR_HOMOPLASMIC	G	G
+1555	A	G	RNR1	rRNA	rrna	rRNA_variant	NA	HETEROPLASMIC	A	R
+3243	A	G	TRNL1	tRNA	trna	tRNA_variant	NA	HETEROPLASMIC	A	R
+3312	C	T	ND1	CDS	coding	synonymous_variant	p.Pro2=	HETEROPLASMIC	C	Y
+3314	T	C	ND1	CDS	coding	missense_variant	p.Met3Thr	NEAR_HOMOPLASMIC	C	C

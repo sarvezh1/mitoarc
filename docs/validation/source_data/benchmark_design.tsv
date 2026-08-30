@@ -1,0 +1,11 @@
+design_component	value
+Depths	100x, 250x, 500x, 1000x, 2000x, 5000x
+Replicates	R1, R2, R3; distinct deterministic seeds
+Physical executions	18
+Truth alleles per input	36
+Total truth alleles	648
+Truth/callset comparisons	4536
+Nominal VAF targets	0.005, 0.015, 0.035, 0.075, 0.25, 0.75
+Variant classes	SNV and indel
+NUMT contexts	NO_NUMT_CHALLENGE, NUMT_LIKE, AMBIGUOUS_CONTEXT
+Boundary classes	BOUNDARY and NON_BOUNDARY

@@ -1,0 +1,2 @@
+truth_id	chrom	pos	ref	alt	variant_class	expected_vaf	boundary_class	numt_context	source	notes
+example_truth_1	chrM	200	T	C	SNV	0.20	NON_BOUNDARY	NO_NUMT_CHALLENGE	example_only	Not a biological truth claim

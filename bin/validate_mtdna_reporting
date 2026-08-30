@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""Validate report contracts, plots, HTML integrity, and upstream agreement."""
+
+import argparse
+import csv
+import re
+import struct
+import sys
+import xml.etree.ElementTree as ET
+from collections import Counter
+from pathlib import Path
+
+VERSION = "1.0.1"
+NA = "NA"
+
+
+def read_rows(path):
+    with open(path, newline="") as handle:
+        return list(csv.DictReader(handle, delimiter="\t"))
+
+
+def record(checks, name, observed, expected):
+    checks.append((name, str(observed), str(expected), "PASS" if str(observed) == str(expected) else "FAIL"))
+
+
+def png_dimensions(path):
+    data = Path(path).read_bytes()
+    if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
+        return None
+    return struct.unpack(">II", data[16:24])
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sample", required=True)
+    parser.add_argument("--summary", required=True)
+    parser.add_argument("--metrics", required=True)
+    parser.add_argument("--annotation-summary", required=True)
+    parser.add_argument("--annotation", action="append", default=[])
+    parser.add_argument("--source-comparison")
+    parser.add_argument("--comparison", required=True)
+    parser.add_argument("--variants", required=True)
+    parser.add_argument("--plot-data", required=True)
+    parser.add_argument("--features", required=True)
+    parser.add_argument("--plot-manifest", required=True)
+    parser.add_argument("--html", required=True)
+    parser.add_argument("--svg", action="append", default=[])
+    parser.add_argument("--png", action="append", default=[])
+    parser.add_argument("--expected")
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args()
+
+    checks = []
+    summary = read_rows(args.summary)[0]
+    metrics = read_rows(args.metrics)[0]
+    annotation_summary = read_rows(args.annotation_summary)
+    annotation_rows = []
+    for path in args.annotation:
+        annotation_rows.extend(read_rows(path))
+    variants = read_rows(args.variants)
+    plot_data = read_rows(args.plot_data)
+    features = read_rows(args.features)
+    comparison = read_rows(args.comparison)
+    source_comparison = read_rows(args.source_comparison) if args.source_comparison else []
+    manifest = read_rows(args.plot_manifest)[0]
+
+    record(checks, "html_exists_nonempty", Path(args.html).exists() and Path(args.html).stat().st_size > 5000, True)
+    html_text = Path(args.html).read_text(encoding="utf-8")
+    text_without_images = re.sub(r"data:image/(?:png|svg\+xml);base64,[A-Za-z0-9+/=]+",
+                                 "EMBEDDED_IMAGE", html_text)
+    external = re.findall(r"(?:src|href)\s*=\s*['\"]https?://", html_text, flags=re.I)
+    record(checks, "html_external_asset_dependencies", len(external), 0)
+    record(checks, "html_mitoarc_branding",
+           "MitoArc" in html_text and "Mitochondrial DNA Analysis Report" in html_text, True)
+    record(checks, "html_embedded_mitoarc_icon",
+           '<img class="brand-icon" src="data:image/svg+xml;base64,' in html_text and
+           'alt="MitoArc icon"' in html_text, True)
+    record(checks, "html_document_title",
+           f"<title>MitoArc — {args.sample} mitochondrial DNA analysis report</title>" in html_text, True)
+    private_patterns = [r"/mnt/", r"/home/", r"[A-Za-z]:\\", r"file://", r"work_[A-Za-z0-9]"]
+    record(checks, "html_private_path_leaks",
+           sum(bool(re.search(pattern, text_without_images, flags=re.I)) for pattern in private_patterns), 0)
+    record(checks, "html_embedded_images", html_text.count("data:image/png;base64,"), 6)
+
+    for path in args.svg:
+        valid = False
+        svg_text = ""
+        try:
+            root = ET.parse(path).getroot()
+            valid = root.tag.endswith("svg") and Path(path).stat().st_size > 1000
+            svg_text = Path(path).read_text(encoding="utf-8")
+        except (ET.ParseError, OSError):
+            pass
+        record(checks, f"svg_valid_{Path(path).name}", valid, True)
+        record(checks, f"svg_private_path_leaks_{Path(path).name}",
+               sum(bool(re.search(pattern, svg_text, flags=re.I)) for pattern in private_patterns), 0)
+    for path in args.png:
+        dimensions = png_dimensions(path)
+        valid = dimensions is not None and dimensions[0] >= 600 and dimensions[1] >= 300
+        record(checks, f"png_valid_{Path(path).name}", valid, True)
+    record(checks, "svg_file_count", len(args.svg), 6)
+    record(checks, "png_file_count", len(args.png), 6)
+
+    metric_fields = ["mean_mt_depth", "median_mt_depth", "min_mt_depth", "max_mt_depth",
+                     "pct_mt_ge_1x", "pct_mt_ge_10x", "pct_mt_ge_100x", "pct_mt_ge_500x",
+                     "pct_mt_ge_1000x", "mean_autosomal_depth", "median_autosomal_depth",
+                     "mtdna_copy_number_proxy", "coverage_mapq"]
+    for field in metric_fields:
+        record(checks, f"summary_metric_{field}", summary.get(field, NA), metrics.get(field, NA))
+
+    annotation_by_caller = {row["caller"]: row for row in annotation_summary}
+    for caller in ("gatk", "mutserve2"):
+        source = annotation_by_caller.get(caller, {})
+        record(checks, f"summary_{caller}_total_variants", summary.get(f"{caller}_total_variants", NA),
+               source.get("total_variants", NA))
+        record(checks, f"summary_{caller}_heteroplasmic", summary.get(f"{caller}_heteroplasmic", NA),
+               source.get("heteroplasmic", NA))
+        record(checks, f"summary_{caller}_near_homoplasmic",
+               summary.get(f"{caller}_near_homoplasmic", NA), source.get("near_homoplasmic", NA))
+
+    compare_fields = ["sample", "caller", "contig", "position", "ref", "alt", "gene", "feature_type",
+                      "consequence", "protein_change", "depth", "vaf", "variant_state",
+                      "numt_evidence_status", "filter_status", "annotation_status"]
+    source_set = {tuple(row.get(field, NA) for field in compare_fields) for row in annotation_rows}
+    report_set = {tuple(row.get(field, NA) for field in compare_fields) for row in variants}
+    record(checks, "variant_table_row_count", len(variants), len(annotation_rows))
+    record(checks, "variant_table_exact_upstream_rows", report_set == source_set, True)
+    for row in variants:
+        record(checks, f"html_variant_{row['caller']}_{row['position']}_{row['ref']}_{row['alt']}",
+               all(value in html_text for value in [row["position"], row["ref"], row["alt"], row["caller"]]), True)
+
+    if source_comparison:
+        normalized_source = {(row["position"], row["ref"], row["alt"], row["gatk_vaf"], row["mutserve2_vaf"])
+                             for row in source_comparison}
+        normalized_report = {(row["position"], row["ref"], row["alt"], row["gatk_vaf"], row["mutserve2_vaf"])
+                             for row in comparison}
+        record(checks, "caller_comparison_preserved", normalized_report == normalized_source, True)
+        disagreements = sum(row.get("callset_relationship") != "shared" for row in comparison)
+        source_disagreements = sum(not (row.get("in_gatk") == "true" and row.get("in_mutserve2") == "true")
+                                   for row in source_comparison)
+        record(checks, "caller_disagreement_count", disagreements, source_disagreements)
+
+    numt = Counter(row.get("numt_evidence_status", NA) for row in variants)
+    record(checks, "numt_retained_count", summary["numt_retained_caller_rows"], numt.get("RETAINED", 0))
+    record(checks, "numt_not_evaluated_count", summary["numt_not_evaluated_caller_rows"],
+           numt.get("NOT_EVALUATED", 0))
+    record(checks, "numt_flagged_count", summary["numt_flagged_caller_rows"],
+           sum(count for status, count in numt.items() if "FLAG" in status))
+
+    unique_positions = sorted({int(row["position"]) for row in plot_data})
+    record(checks, "plot_positions_start", unique_positions[0] if unique_positions else 0, 1)
+    record(checks, "plot_positions_contiguous",
+           unique_positions == list(range(1, unique_positions[-1] + 1)) if unique_positions else False, True)
+    record(checks, "plot_manifest_variant_rows", manifest["variant_rows"], len(variants))
+    expected_manifest_positions = ",".join(str(pos) for pos in sorted({int(row["position"]) for row in variants}))
+    record(checks, "plot_manifest_variant_positions", manifest["variant_positions"], expected_manifest_positions)
+    compatible = summary["reference_compatibility"] == "CANONICAL_NC_012920.1"
+    record(checks, "feature_contract_compatibility", bool(features), compatible)
+    record(checks, "mitoplot_status", manifest["mitoplot_status"],
+           "AVAILABLE" if compatible else "UNAVAILABLE_REFERENCE")
+
+    if args.expected:
+        expected = read_rows(args.expected)
+        variant_lookup = {(row["position"], row["ref"], row["alt"]): row for row in variants}
+        plot_positions = {int(row["position"]) for row in plot_data if row.get("caller") != NA}
+        manifest_positions = {int(value) for value in manifest["variant_positions"].split(",") if value}
+        for row in expected:
+            key = (row["position"], row["ref"], row["alt"])
+            observed = variant_lookup.get(key, {})
+            record(checks, f"functional_gene_{row['position']}", observed.get("gene", "MISSING"), row["gene"])
+            record(checks, f"functional_consequence_{row['position']}",
+                   observed.get("consequence", "MISSING"), row["consequence"])
+            record(checks, f"functional_plot_position_{row['position']}", int(row["position"]) in plot_positions, True)
+            record(checks, f"functional_mitoplot_position_{row['position']}",
+                   int(row["position"]) in manifest_positions, True)
+
+    with open(args.output, "w", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        writer.writerow(["sample", "validator", "validator_version", "check", "observed", "expected", "status"])
+        for name, observed, expected, status in checks:
+            writer.writerow([args.sample, "mtdna_reporting_validator", VERSION, name, observed, expected, status])
+    if any(status == "FAIL" for *_, status in checks):
+        sys.exit("Mitochondrial reporting validation failed")
+
+
+if __name__ == "__main__":
+    main()

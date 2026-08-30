@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+"""Build stable, caller-preserving reporting contracts from structured outputs."""
+
+import argparse
+import csv
+import json
+from collections import Counter, defaultdict
+from pathlib import Path
+
+VERSION = "1.0.0"
+NA = "NA"
+
+
+def rows(path):
+    if not path or not Path(path).exists():
+        return []
+    with open(path, newline="") as handle:
+        return list(csv.DictReader(handle, delimiter="\t"))
+
+
+def first(path):
+    data = rows(path)
+    return data[0] if data else {}
+
+
+def value(row, key, default=NA):
+    found = row.get(key)
+    return default if found in {None, ""} else found
+
+
+def write_tsv(path, fieldnames, data):
+    with open(path, "w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames, delimiter="\t", lineterminator="\n",
+                                extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(data)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sample", required=True)
+    parser.add_argument("--reference-label", required=True)
+    parser.add_argument("--mt-contig", required=True)
+    parser.add_argument("--coverage-mapq", required=True)
+    parser.add_argument("--homoplasmy-threshold", required=True)
+    parser.add_argument("--mutserve2-threshold", required=True)
+    parser.add_argument("--numt-mode", required=True)
+    parser.add_argument("--pipeline-version", required=True)
+    parser.add_argument("--nextflow-version", required=True)
+    parser.add_argument("--input-validation")
+    parser.add_argument("--metrics", required=True)
+    parser.add_argument("--depth", required=True)
+    parser.add_argument("--caller-comparison")
+    parser.add_argument("--caller-summary")
+    parser.add_argument("--haplogroups")
+    parser.add_argument("--haplogroup-comparison")
+    parser.add_argument("--contamination")
+    parser.add_argument("--annotation-summary", required=True)
+    parser.add_argument("--annotation", action="append", default=[])
+    parser.add_argument("--consensus-validation", action="append", default=[])
+    parser.add_argument("--features", required=True)
+    parser.add_argument("--output-summary", required=True)
+    parser.add_argument("--output-json", required=True)
+    parser.add_argument("--output-plot-data", required=True)
+    parser.add_argument("--output-features", required=True)
+    parser.add_argument("--output-variants", required=True)
+    parser.add_argument("--output-comparison", required=True)
+    args = parser.parse_args()
+
+    metric = first(args.metrics)
+    input_validation = first(args.input_validation) if args.input_validation else {
+        "input_type": "FASTQ", "source_format": "FASTQ", "alignment_context": "FULL_REFERENCE",
+        "index_status": "generated", "numt_evaluation_capability": "EVALUABLE_FULL_REFERENCE",
+        "autosomal_depth_capability": "available_full_reference"
+    }
+    depth_data = rows(args.depth)
+    annotation_summary = rows(args.annotation_summary)
+    annotation_rows = []
+    for path in args.annotation:
+        annotation_rows.extend(rows(path))
+    consensus_rows = []
+    for path in args.consensus_validation:
+        consensus_rows.extend(rows(path))
+    comparison_rows = rows(args.caller_comparison)
+    caller_summary = first(args.caller_summary)
+    haplogroup_rows = rows(args.haplogroups)
+    haplogroup_comparison = first(args.haplogroup_comparison)
+    contamination_rows = rows(args.contamination)
+
+    annotation_by_caller = {row.get("caller", NA): row for row in annotation_summary}
+    haplogroup_by_caller = {row.get("caller", NA): row for row in haplogroup_rows}
+    contamination_by_caller = {row.get("caller", NA): row for row in contamination_rows}
+    consensus_by_caller = {row.get("caller", NA): row for row in consensus_rows}
+    annotation_statuses = {row.get("annotation_status", NA) for row in annotation_summary}
+    compatible = bool(annotation_statuses) and annotation_statuses == {"AVAILABLE"}
+    reference_compatibility = "CANONICAL_NC_012920.1" if compatible else "INCOMPATIBLE_OR_TRUNCATED"
+    biological_status = ("CANONICAL_HUMAN_MTDNA" if compatible else
+                         "TECHNICAL_REFERENCE_BIOLOGICAL_VIEWS_UNAVAILABLE")
+
+    feature_rows = rows(args.features) if compatible else []
+    feature_columns = ["sample", "feature_id", "feature_type", "gene", "start", "end",
+                       "strand", "product", "reference_compatibility"]
+    feature_contract = []
+    for row in feature_rows:
+        feature_contract.append({"sample": args.sample, **row,
+                                 "reference_compatibility": reference_compatibility})
+    write_tsv(args.output_features, feature_columns, feature_contract)
+
+    comparison_map = {}
+    for row in comparison_rows:
+        key = (row.get("contig"), row.get("position"), row.get("ref"), row.get("alt"))
+        in_gatk = row.get("in_gatk", "false").lower() == "true"
+        in_mutserve = row.get("in_mutserve2", "false").lower() == "true"
+        relationship = "shared" if in_gatk and in_mutserve else ("gatk_only" if in_gatk else "mutserve2_only")
+        comparison_map[key] = relationship
+
+    variant_columns = [
+        "sample", "caller", "contig", "position", "ref", "alt", "gene", "feature_type",
+        "region_type", "consequence", "protein_change", "depth", "vaf", "variant_state",
+        "numt_evidence_status", "filter_status", "annotation_status", "callset_relationship",
+    ]
+    variants = []
+    for row in annotation_rows:
+        key = (row.get("contig"), row.get("position"), row.get("ref"), row.get("alt"))
+        variants.append({**row, "callset_relationship": comparison_map.get(key, "not_compared")})
+    variants.sort(key=lambda row: (int(row.get("position", 0)), row.get("caller", ""),
+                                   row.get("ref", ""), row.get("alt", "")))
+    write_tsv(args.output_variants, variant_columns, variants)
+
+    comparison_columns = [
+        "sample", "contig", "position", "ref", "alt", "callset_relationship",
+        "gatk_status", "gatk_depth", "gatk_vaf", "mutserve2_status",
+        "mutserve2_depth", "mutserve2_vaf",
+    ]
+    comparison_contract = []
+    for row in comparison_rows:
+        key = (row.get("contig"), row.get("position"), row.get("ref"), row.get("alt"))
+        comparison_contract.append({**row, "callset_relationship": comparison_map.get(key, NA)})
+    write_tsv(args.output_comparison, comparison_columns, comparison_contract)
+
+    features_by_position = defaultdict(list)
+    for feature in feature_rows:
+        for position in range(int(feature["start"]), int(feature["end"]) + 1):
+            features_by_position[position].append(feature)
+    variants_by_position = defaultdict(list)
+    for row in variants:
+        variants_by_position[int(row["position"])].append(row)
+
+    plot_columns = [
+        "sample", "position", "coverage", "gene", "feature_type", "caller", "ref", "alt",
+        "vaf", "variant_state", "consequence", "protein_change", "depth",
+        "numt_evidence_status", "filter_status", "annotation_status",
+    ]
+    plot_rows = []
+    for depth_row in depth_data:
+        position = int(depth_row["position"])
+        overlapping = features_by_position.get(position, [])
+        genes = "&".join(dict.fromkeys(row["gene"] for row in overlapping)) or NA
+        feature_types = "&".join(dict.fromkeys(row["feature_type"] for row in overlapping)) or NA
+        position_variants = variants_by_position.get(position) or [{}]
+        for variant in position_variants:
+            plot_rows.append({
+                "sample": args.sample, "position": position,
+                "coverage": value(depth_row, "coverage"), "gene": value(variant, "gene", genes),
+                "feature_type": value(variant, "feature_type", feature_types),
+                "caller": value(variant, "caller"), "ref": value(variant, "ref"),
+                "alt": value(variant, "alt"), "vaf": value(variant, "vaf"),
+                "variant_state": value(variant, "variant_state"),
+                "consequence": value(variant, "consequence"),
+                "protein_change": value(variant, "protein_change"),
+                "depth": value(variant, "depth"),
+                "numt_evidence_status": value(variant, "numt_evidence_status"),
+                "filter_status": value(variant, "filter_status"),
+                "annotation_status": value(variant, "annotation_status",
+                                             "AVAILABLE" if compatible else "UNAVAILABLE"),
+            })
+    write_tsv(args.output_plot_data, plot_columns, plot_rows)
+
+    numt_counts = Counter(row.get("numt_evidence_status", NA) for row in variants)
+    numt_retained = numt_counts.get("RETAINED", 0)
+    numt_not_evaluated = numt_counts.get("NOT_EVALUATED", 0)
+    numt_flagged = sum(count for status, count in numt_counts.items() if "FLAG" in status)
+    numt_unresolved = len(variants) - numt_retained - numt_not_evaluated - numt_flagged
+    numt_capability = value(input_validation, "numt_evaluation_capability")
+    numt_evaluation = (numt_capability if numt_capability.startswith("NOT_EVALUABLE") or
+                       numt_capability == "NUMT_CONTEXT_INCOMPLETE" else
+                       ("NOT_EVALUATED" if args.numt_mode == "none" else "EVALUATED_COMPARISON"))
+
+    def caller_value(mapping, caller, key):
+        return value(mapping.get(caller, {}), key)
+
+    summary = {
+        "sample": args.sample,
+        "reference": Path(args.reference_label).name,
+        "reference_accession": "NC_012920.1" if compatible else NA,
+        "reference_compatibility": reference_compatibility,
+        "biological_reporting_status": biological_status,
+        "mt_contig": args.mt_contig,
+        "input_type": value(input_validation, "input_type"),
+        "source_format": value(input_validation, "source_format"),
+        "alignment_context": value(input_validation, "alignment_context"),
+        "index_status": value(input_validation, "index_status"),
+        "numt_evaluation_capability": numt_capability,
+        "autosomal_depth_capability": value(input_validation, "autosomal_depth_capability"),
+        "fastq_qc_status": ("NOT_APPLICABLE_PREALIGNED_INPUT" if value(input_validation, "input_type") in {"BAM", "CRAM"} else "AVAILABLE"),
+    }
+    metric_fields = [
+        "mean_mt_depth", "median_mt_depth", "min_mt_depth", "max_mt_depth",
+        "pct_mt_ge_1x", "pct_mt_ge_10x", "pct_mt_ge_100x", "pct_mt_ge_500x",
+        "pct_mt_ge_1000x", "mean_autosomal_depth", "median_autosomal_depth",
+        "mtdna_copy_number_proxy", "copy_number_proxy_status",
+    ]
+    summary.update({key: value(metric, key) for key in metric_fields})
+    summary.update({
+        "coverage_mapq": args.coverage_mapq,
+        "gatk_total_variants": caller_value(annotation_by_caller, "gatk", "total_variants"),
+        "mutserve2_total_variants": caller_value(annotation_by_caller, "mutserve2", "total_variants"),
+        "shared_calls": value(caller_summary, "shared_calls"),
+        "gatk_only_calls": value(caller_summary, "gatk_only_calls"),
+        "mutserve2_only_calls": value(caller_summary, "mutserve2_only_calls"),
+        "gatk_heteroplasmic": caller_value(annotation_by_caller, "gatk", "heteroplasmic"),
+        "gatk_near_homoplasmic": caller_value(annotation_by_caller, "gatk", "near_homoplasmic"),
+        "mutserve2_heteroplasmic": caller_value(annotation_by_caller, "mutserve2", "heteroplasmic"),
+        "mutserve2_near_homoplasmic": caller_value(annotation_by_caller, "mutserve2", "near_homoplasmic"),
+        "gatk_annotation_status": caller_value(annotation_by_caller, "gatk", "annotation_status"),
+        "mutserve2_annotation_status": caller_value(annotation_by_caller, "mutserve2", "annotation_status"),
+        "gatk_missense": caller_value(annotation_by_caller, "gatk", "missense"),
+        "gatk_synonymous": caller_value(annotation_by_caller, "gatk", "synonymous"),
+        "gatk_rrna": caller_value(annotation_by_caller, "gatk", "rrna"),
+        "gatk_trna": caller_value(annotation_by_caller, "gatk", "trna"),
+        "gatk_control_region": caller_value(annotation_by_caller, "gatk", "control_region"),
+        "mutserve2_missense": caller_value(annotation_by_caller, "mutserve2", "missense"),
+        "mutserve2_synonymous": caller_value(annotation_by_caller, "mutserve2", "synonymous"),
+        "mutserve2_rrna": caller_value(annotation_by_caller, "mutserve2", "rrna"),
+        "mutserve2_trna": caller_value(annotation_by_caller, "mutserve2", "trna"),
+        "mutserve2_control_region": caller_value(annotation_by_caller, "mutserve2", "control_region"),
+        "gatk_haplogroup": caller_value(haplogroup_by_caller, "gatk", "haplogroup"),
+        "gatk_haplogroup_quality": caller_value(haplogroup_by_caller, "gatk", "quality"),
+        "gatk_haplogroup_status": caller_value(haplogroup_by_caller, "gatk", "status"),
+        "mutserve2_haplogroup": caller_value(haplogroup_by_caller, "mutserve2", "haplogroup"),
+        "mutserve2_haplogroup_quality": caller_value(haplogroup_by_caller, "mutserve2", "quality"),
+        "mutserve2_haplogroup_status": caller_value(haplogroup_by_caller, "mutserve2", "status"),
+        "haplogroup_relationship": value(haplogroup_comparison, "relationship"),
+        "gatk_contamination": caller_value(contamination_by_caller, "gatk", "estimated_contamination"),
+        "gatk_contamination_status": caller_value(contamination_by_caller, "gatk", "status"),
+        "mutserve2_contamination": caller_value(contamination_by_caller, "mutserve2", "estimated_contamination"),
+        "mutserve2_contamination_status": caller_value(contamination_by_caller, "mutserve2", "status"),
+        "numt_evaluation_status": numt_evaluation,
+        "numt_retained_caller_rows": str(numt_retained),
+        "numt_flagged_caller_rows": str(numt_flagged),
+        "numt_unresolved_caller_rows": str(numt_unresolved),
+        "numt_not_evaluated_caller_rows": str(numt_not_evaluated),
+        "homoplasmy_threshold": args.homoplasmy_threshold,
+        "mutserve2_heteroplasmy_threshold": args.mutserve2_threshold,
+        "numt_mode": args.numt_mode,
+        "pipeline_version": args.pipeline_version,
+        "nextflow_version": args.nextflow_version,
+        "reporting_contract_version": VERSION,
+        "annotation_resource": value(annotation_summary[0] if annotation_summary else {}, "annotation_resource"),
+        "haplogrep_version": caller_value(haplogroup_by_caller, "gatk", "tool_version"),
+        "haplocheck_version": caller_value(contamination_by_caller, "gatk", "tool_version"),
+        "gatk_version": "4.6.2.0",
+        "mutserve2_version": "2.0.3",
+        "multiqc_version": "1.27.1",
+        "matplotlib_version": "3.10.5",
+    })
+    for caller in ("gatk", "mutserve2"):
+        consensus = consensus_by_caller.get(caller, {})
+        summary.update({
+            f"{caller}_consensus_filename": f"{args.sample}.{caller}.consensus.fa" if consensus else NA,
+            f"{caller}_consensus_validation_status": value(consensus, "validation_status"),
+            f"{caller}_consensus_heteroplasmy_mode": value(consensus, "heteroplasmy_mode"),
+            f"{caller}_consensus_near_homoplasmic_edits": value(consensus, "near_homoplasmic_edits"),
+            f"{caller}_consensus_iupac_sites": value(consensus, "iupac_sites"),
+            f"{caller}_consensus_indel_length_delta": value(consensus, "indel_length_delta"),
+            f"{caller}_consensus_length": value(consensus, "consensus_length"),
+        })
+    other_callers = sorted(set(annotation_by_caller) - {"gatk", "mutserve2"})
+    summary["additional_callers"] = ",".join(other_callers) if other_callers else NA
+    summary["additional_caller_variant_rows"] = str(sum(1 for row in variants if row.get("caller") in other_callers))
+    additional_consensus = [row for caller, row in consensus_by_caller.items() if caller not in {"gatk", "mutserve2"}]
+    summary["additional_consensus_callers"] = ",".join(row.get("caller", NA) for row in additional_consensus) or NA
+    summary["additional_consensus_validation_statuses"] = ",".join(
+        row.get("validation_status", NA) for row in additional_consensus) or NA
+    summary["additional_consensus_heteroplasmy_modes"] = ",".join(
+        row.get("heteroplasmy_mode", NA) for row in additional_consensus) or NA
+    summary["additional_consensus_near_homoplasmic_edits"] = ",".join(
+        row.get("near_homoplasmic_edits", NA) for row in additional_consensus) or NA
+
+    write_tsv(args.output_summary, list(summary), [summary])
+    with open(args.output_json, "w") as handle:
+        json.dump(summary, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
+if __name__ == "__main__":
+    main()

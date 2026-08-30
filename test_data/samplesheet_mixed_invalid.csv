@@ -1,0 +1,2 @@
+sample,fastq_1,fastq_2,bam
+TEST,test_data/TEST_fixture_R1.fastq,test_data/TEST_fixture_R2.fastq,test_data/fixtures/TEST.sorted.bam

@@ -1,0 +1,13 @@
+field	required	type	rule	description
+truth_id	yes	string	unique	Stable truth allele identifier
+chrom	yes	string	reference contig	Canonical contig name
+pos	yes	integer	1..contig length	One-based position
+ref	yes	string	ACGTN+	Reference allele; verified against FASTA
+alt	yes	string	ACGTN+; alt != ref	Alternate allele
+variant_class	yes	enum	SNV|indel	Allele class
+expected_vaf	yes	float	0..1	Achieved input VAF used for scoring
+boundary_class	yes	enum	BOUNDARY|NON_BOUNDARY	Boundary classification
+numt_context	yes	enum	NO_NUMT_CHALLENGE|NUMT_LIKE|AMBIGUOUS_CONTEXT	Controlled evidence context
+source	yes	string	non-empty	Truth source or generation record
+notes	yes	string-or-NA	free text	Non-interpretive notes
+variant_key	output	string	chrom:pos:ref:alt	Canonical normalized allele key

@@ -1,0 +1,7 @@
+benchmark_id	truth_id	chrom	pos	ref	alt	achieved_vaf	depth	replicate	caller	boundary_class	bam_support_alt_fragments	bam_support_ref_fragments	LOW_fragments	AMBIGUOUS_fragments	HIGH_fragments	pipeline_supporting_fragments	final_strategy_c_status	reason	support_source
+block12_R1_d250	V2_A6	chrM	515	A	AT	0.016	250	1	gatk	BOUNDARY	4	246	4	0	0	NA	UNRESOLVED_SUPPORT	INTENDED_SNV_ONLY_SUPPORT_SCOPE:non_SNV_forced_to_NA_before_evidence_join	NA_non_SNV
+block12_R2_d250	V3_A5	chrM	7741	T	TG	0.036	250	2	gatk	NON_BOUNDARY	9	241	6	3	0	NA	UNRESOLVED_SUPPORT	INTENDED_SNV_ONLY_SUPPORT_SCOPE:non_SNV_forced_to_NA_before_evidence_join	NA_non_SNV
+block12_R2_d1000	V4_A6	chrM	15774	T	TC	0.075	1000	2	gatk	BOUNDARY	70	928	70	0	0	NA	UNRESOLVED_SUPPORT	INTENDED_SNV_ONLY_SUPPORT_SCOPE:non_SNV_forced_to_NA_before_evidence_join	NA_non_SNV
+block12_R3_d1000	V4_A5	chrM	9900	C	CG	0.075	1000	3	gatk	NON_BOUNDARY	71	928	44	27	0	NA	UNRESOLVED_SUPPORT	INTENDED_SNV_ONLY_SUPPORT_SCOPE:non_SNV_forced_to_NA_before_evidence_join	NA_non_SNV
+block12_R1_d5000	V5_A6	chrM	16095	C	CA	0.25	5000	1	gatk	BOUNDARY	1162	3811	1162	0	0	NA	UNRESOLVED_SUPPORT	INTENDED_SNV_ONLY_SUPPORT_SCOPE:non_SNV_forced_to_NA_before_evidence_join	NA_non_SNV
+block12_R3_d5000	V6_A5	chrM	14221	T	TG	0.75	5000	3	gatk	NON_BOUNDARY	3528	1422	2537	991	0	NA	UNRESOLVED_SUPPORT	INTENDED_SNV_ONLY_SUPPORT_SCOPE:non_SNV_forced_to_NA_before_evidence_join	NA_non_SNV
