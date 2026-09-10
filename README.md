@@ -10,6 +10,12 @@ Licensed under the [MIT License](LICENSE).
 
 <br clear="right">
 
+## Paper data
+
+Machine-readable values underlying selected benchmark results reported in the MitoArc manuscript and Supplementary Information are available in [`paper_data/`](paper_data/). The package contains software versions, caller depth metrics, NUMT observability, NUMT Strategy A/B metrics, matched circular-coordinate metrics, and complete-workflow resource measurements.
+
+Overall caller false positives use `TOTAL_EXACT_TRUTH_FP`. NUMT Strategy A/B false positives use `OBSERVABLE_NUMT_ASSOCIATED_FP`. VAF error is based on achieved VAF among recovered truth alleles. The three benchmark replicates are technical stochastic replicates, not biological replicates. Strategy C is an evidence-classification view rather than an independent caller; its v1.0.0 fragment-level allele-support scope is SNV-focused, and non-SNV records may receive `UNRESOLVED_SUPPORT`. The evaluated mutserve2 configuration did not enable beta insertion or deletion modes.
+
 ## Overview
 
 MitoArc provides:
@@ -29,42 +35,69 @@ These are implemented workflow capabilities; MitoArc does not claim that every c
 ## Workflow
 
 ```mermaid
+---
+config:
+  theme: mc
+---
 flowchart TD
+
+    %% INPUTS
     FQ[Paired-end FASTQ] --> QC[FastQC and fastp]
     QC --> ALN[Full-reference BWA-MEM2 alignment]
 
     BAM[Coordinate-sorted BAM] --> PRE[Pre-aligned input validation]
     CRAM[CRAM plus matching reference] --> PRE
 
-    ALN --> COMMON[Common full-reference alignment contract]
+    ALN --> COMMON[Common standardized alignment]
     PRE --> COMMON
 
-    COMMON --> EXTRACT[mtDNA extraction and depth/QC]
-    COMMON -. optional .-> NUMT[Experimental NUMT evidence]
+    %% COMMON ANALYSIS
+    COMMON --> EXTRACT[mtDNA read extraction]
+    COMMON --> COV[mtDNA and autosomal coverage metrics]
 
-    EXTRACT --> CIRC[Standard and shifted mtDNA processing]
+    %% MITOCHONDRIAL REALIGNMENT
+    EXTRACT --> STD[Standard mtDNA realignment]
+    EXTRACT --> SHIFT[Shifted mtDNA realignment]
 
-    CIRC --> GATK[GATK mitochondrial Mutect2]
-    CIRC --> MUT[mutserve2]
+    %% GATK
+    STD --> GATKSTD[GATK Mutect2<br/>standard branch]
+    SHIFT --> GATKSHIFT[GATK Mutect2<br/>shifted branch]
 
-    GATK --> INTERP[Caller-preserving annotation, haplogroup, contamination, consensus]
+    GATKSTD --> GATKFINAL[GATK canonical callset<br/>liftover, combine and filter]
+    GATKSHIFT --> GATKFINAL
+
+    %% MUTSERVE2
+    STD --> MUT[mutserve2<br/>standard branch]
+
+    %% OPTIONAL NUMT ANALYSIS
+    COMMON -. optional .-> NUMT[Experimental NUMT analysis]
+    GATKFINAL -. caller evidence .-> NUMT
+    MUT -. caller evidence .-> NUMT
+
+    %% INTERPRETATION
+    GATKFINAL --> INTERP[Caller-specific interpretation]
     MUT --> INTERP
-    NUMT --> INTERP
+    NUMT -. evidence .-> INTERP
+    COV --> INTERP
 
-    INTERP --> REPORT[Structured outputs, MultiQC, plots, self-contained HTML report]
+    INTERP --> BIO[Annotation, haplogroup,<br/>contamination and consensus]
 
-    classDef input fill:#DFF4FF,stroke:#3A7CA5,stroke-width:1.5px,color:#123547;
-    classDef process fill:#DDFBF3,stroke:#2A9D8F,stroke-width:1.5px,color:#12433D;
-    classDef caller fill:#FFE3DC,stroke:#E76F51,stroke-width:1.5px,color:#5A2218;
-    classDef experimental fill:#FFF1C7,stroke:#D4A017,stroke-width:1.5px,color:#5C4300;
-    classDef interpretation fill:#E7F7D9,stroke:#6BAA75,stroke-width:1.5px,color:#244A2F;
-    classDef report fill:#EEE7FF,stroke:#8B6FCF,stroke-width:1.5px,color:#37285C;
+    %% REPORTING
+    BIO --> REPORT[Structured TSV/JSON outputs,<br/>SVG/PNG plots, MultiQC and<br/>self-contained HTML report]
+
+    %% STYLES
+    classDef input fill:#EAF5FB,stroke:#4C7A92,stroke-width:1.5px,color:#173645;
+    classDef process fill:#E7F6F1,stroke:#3D887B,stroke-width:1.5px,color:#173F38;
+    classDef caller fill:#FCE9E4,stroke:#C96D59,stroke-width:1.5px,color:#542B22;
+    classDef experimental fill:#FFF5D9,stroke:#B8902E,stroke-width:1.5px,color:#55420C;
+    classDef interpretation fill:#EDF5E6,stroke:#718F63,stroke-width:1.5px,color:#30432A;
+    classDef report fill:#F0ECFA,stroke:#806CA8,stroke-width:1.5px,color:#382E52;
 
     class FQ,BAM,CRAM input;
-    class QC,ALN,PRE,COMMON,EXTRACT,CIRC process;
-    class GATK,MUT caller;
+    class QC,ALN,PRE,COMMON,EXTRACT,COV,STD,SHIFT process;
+    class GATKSTD,GATKSHIFT,GATKFINAL,MUT caller;
     class NUMT experimental;
-    class INTERP interpretation;
+    class INTERP,BIO interpretation;
     class REPORT report;
 
     style NUMT stroke-dasharray: 5 5
@@ -171,7 +204,7 @@ The evaluated and default frozen v1.0.0 configuration uses mutserve2 2.0.3 witho
 
 ### Real-human HG002 validation
 
-End-to-end BAM validation used genuine GIAB HG002 data: complete chrM plus a reduced indexed extraction containing selected real nuclear context. The run produced complete reporting, mean mtDNA depth of approximately 131,324×, and H5a7 assignments from both callers.
+End-to-end BAM validation used genuine GIAB HG002 data: complete chrM plus reduced, partial nuclear context. The run produced complete reporting, mean mtDNA depth of approximately 131,324×, and H5a7 assignments from both callers.
 
 This was **not complete-WGS nuclear context and not full-human FASTQ validation**. Consequently, contamination was `INSUFFICIENT_DATA`, and the mtDNA copy-number proxy was unavailable because mapped autosomal context was incomplete.
 
@@ -205,9 +238,11 @@ The following figures are lightweight copies from the frozen real-HG002 validati
 | --- | --- |
 | ![HG002 mitochondrial depth profile](assets/validation/hg002/HG002.mtDNA_depth_profile.png) | ![HG002 caller comparison](assets/validation/hg002/HG002.caller_comparison.png) |
 
-[Example self-contained MitoArc HTML report](assets/validation/hg002/HG002.mitoarc_report.html) · [VAF landscape](assets/validation/hg002/HG002.vaf_landscape.png) · [Consequence summary](assets/validation/hg002/HG002.variant_consequences.png)
+[Legacy HG002 example report](assets/validation/hg002/HG002.mitoarc_report.html) · [VAF landscape](assets/validation/hg002/HG002.vaf_landscape.png) · [Consequence summary](assets/validation/hg002/HG002.variant_consequences.png)
 
 This example used complete chrM with reduced, partial nuclear context; it is not complete-WGS nuclear-context or full-human FASTQ validation.
+
+The legacy report retains pre-release metadata; the final interpretation of the reduced HG002 input is `PARTIAL_NUCLEAR_CONTEXT`.
 
 ## Reproducibility
 
@@ -229,7 +264,7 @@ Tool and container versions are pinned in workflow modules and container definit
 
 ## Citation
 
-Please use [CITATION.cff](CITATION.cff). A DOI will be added with the archived v1.0.0 release.
+Citation metadata are provided in [CITATION.cff](CITATION.cff).
 
 ## License
 

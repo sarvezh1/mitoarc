@@ -1,0 +1,5 @@
+technical_replicate	designed_challenges	observable_challenges	strategy_a_true_positives	strategy_a_observable_numt_associated_false_positives	strategy_a_false_negatives	strategy_a_recall	strategy_b_true_positives	strategy_b_observable_numt_associated_false_positives	strategy_b_false_negatives	strategy_b_recall	false_positive_metric_scope
+R1	72	66	65	11	7	0.902778	58	0	14	0.805556	OBSERVABLE_NUMT_ASSOCIATED_FP
+R2	72	66	64	11	8	0.888889	57	0	15	0.791667	OBSERVABLE_NUMT_ASSOCIATED_FP
+R3	72	66	64	11	8	0.888889	57	0	15	0.791667	OBSERVABLE_NUMT_ASSOCIATED_FP
+POOLED	216	198	193	33	23	0.893519	172	0	44	0.796296	OBSERVABLE_NUMT_ASSOCIATED_FP
