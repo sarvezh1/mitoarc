@@ -3,6 +3,8 @@ message: "If you use MitoArc, please cite the software using this metadata."
 title: "MitoArc"
 type: software
 version: 1.0.0
+doi: 10.5281/zenodo.23154158
+date-released: 2026-10-05
 authors:
   - family-names: Galgale
     given-names: Sarvesh

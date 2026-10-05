@@ -2,6 +2,9 @@
 
 # MitoArc
 
+[![Release](https://img.shields.io/badge/release-v1.0.0-blue)](https://github.com/sarvezh1/mitoarc/releases/tag/v1.0.0)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23154158.svg)](https://doi.org/10.5281/zenodo.23154158)
+
 **A reproducible short-read workflow for human mitochondrial genome analysis.**
 
 MitoArc v1.0.0 is a Nextflow workflow for paired-end FASTQ, coordinate-sorted BAM, and CRAM inputs. It keeps caller-specific evidence separate while producing auditable mitochondrial QC, variants, interpretation, consensus sequences, plots, MultiQC output, and a self-contained HTML report.
@@ -263,6 +266,10 @@ Tool and container versions are pinned in workflow modules and container definit
 - The workflow and benchmark are technical research validation, not clinical validation.
 
 ## Citation
+
+If you use MitoArc, please cite:
+
+Galgale, S., Vats, I., & Haldar, A. (2026). *MitoArc* (Version v1.0.0) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.23154158
 
 Citation metadata are provided in [CITATION.cff](CITATION.cff).
 
