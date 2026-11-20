@@ -1,10 +1,12 @@
+
 cff-version: 1.2.0
-message: "If you use MitoArc, please cite the software using this metadata."
+message: "Please cite the MitoArc preprint for the methodology and the Zenodo software record for the implementation."
 title: "MitoArc"
 type: software
 version: 1.0.0
 doi: 10.5281/zenodo.23154158
 date-released: 2026-10-05
+
 authors:
   - family-names: Galgale
     given-names: Sarvesh
@@ -12,6 +14,21 @@ authors:
     given-names: Isha
   - family-names: Haldar
     given-names: Agnik
+
 abstract: "A reproducible short-read workflow for human mitochondrial genome analysis."
 license: MIT
 repository-code: https://github.com/sarvezh1/mitoarc
+
+preferred-citation:
+  type: article
+  title: "MitoArc: A Reproducible Short-Read Workflow for Human Mitochondrial Genome Analysis with Circular-Coordinate and NUMT-Aware Evaluation"
+  authors:
+    - family-names: Galgale
+      given-names: Sarvesh
+    - family-names: Vats
+      given-names: Isha
+    - family-names: Haldar
+      given-names: Agnik
+  journal: bioRxiv
+  year: 2026
+  doi: 10.64898/2026.11.19.767817

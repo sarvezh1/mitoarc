@@ -2,6 +2,13 @@
 
 All notable user-facing changes to MitoArc are documented here.
 
+## Unreleased
+
+### Documentation
+- Added the MitoArc bioRxiv preprint DOI.
+- Updated the preferred publication citation in `CITATION.cff`.
+- Added the preprint link and citation to the README.
+
 ## 1.0.0
 
 - Added paired-end FASTQ and validated pre-aligned BAM/CRAM entry modes.

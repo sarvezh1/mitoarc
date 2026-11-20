@@ -2,6 +2,7 @@
 
 # MitoArc
 
+[![bioRxiv](https://img.shields.io/badge/bioRxiv-Preprint-B31B1B)](https://doi.org/10.64898/2026.11.19.767817)
 [![Release](https://img.shields.io/badge/release-v1.0.0-blue)](https://github.com/sarvezh1/mitoarc/releases/tag/v1.0.0)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23154158.svg)](https://doi.org/10.5281/zenodo.23154158)
 
@@ -267,11 +268,17 @@ Tool and container versions are pinned in workflow modules and container definit
 
 ## Citation
 
-If you use MitoArc, please cite:
+If you use MitoArc, please cite the software:
 
-Galgale, S., Vats, I., & Haldar, A. (2026). *MitoArc* (Version v1.0.0) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.23154158
+Galgale, S., Vats, I., & Haldar, A. (2026). *MitoArc* (Version 1.0.0) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.23154158
 
 Citation metadata are provided in [CITATION.cff](CITATION.cff).
+
+## Publication
+
+Galgale, S., Vats, I., & Haldar, A. (2026). MitoArc: A reproducible short-read workflow for human mitochondrial genome analysis with circular-coordinate and NUMT-aware evaluation. *bioRxiv*. https://doi.org/10.64898/2026.11.19.767817
+
+This manuscript is available as a preprint on bioRxiv and has not yet undergone peer review.
 
 ## License
 
